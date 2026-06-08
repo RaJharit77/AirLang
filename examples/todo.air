@@ -1,0 +1,74 @@
+# Todo List en AirLang
+# Montre : blueprints, listes, méthodes, match
+
+blueprint Task
+    id:    Int
+    title: String
+    done:  Bool = false
+
+    fun complete()
+        done = true
+    end
+
+    fun display()
+        icon = if done then "[✓]" else "[ ]" end
+        print(icon + " " + title)
+    end
+end
+
+blueprint TodoList
+    tasks: List[Task] = []
+    next_id: Int = 1
+
+    fun add(title: String)
+        task = Task.new(id: next_id, title: title)
+        tasks.append(task)
+        next_id += 1
+        print("Ajouté : " + title)
+    end
+
+    fun complete(id: Int)
+        for task in tasks
+            if task.id == id
+                task.complete()
+                print("Tâche " + id + " terminée !")
+                return
+            end
+        end
+        print("Tâche " + id + " introuvable.")
+    end
+
+    fun pending() -> List[Task]
+        return tasks.filter(fun(t) => not t.done)
+    end
+
+    fun show()
+        print("=== Ma Todo List ===")
+        if tasks.length() == 0
+            print("Aucune tâche.")
+        else
+            for task in tasks
+                task.display()
+            end
+            print("")
+            print("En attente : " + pending().length() + "/" + tasks.length())
+        end
+    end
+end
+
+fun main()
+    list = TodoList.new()
+
+    list.add("Définir la syntaxe AirLang")
+    list.add("Écrire le Lexer")
+    list.add("Écrire le Parser")
+    list.add("Implémenter le TypeChecker")
+    list.add("Générer du code C")
+
+    list.complete(1)
+    list.complete(2)
+
+    list.show()
+end
+
+main()

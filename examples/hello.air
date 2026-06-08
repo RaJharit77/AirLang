@@ -1,0 +1,16 @@
+# Hello World en AirLang
+# Fichier : hello.air
+
+import io
+
+fun main()
+    name = "Monde"
+    print("Bonjour, " + name + " !")
+
+    # Boucle simple
+    for i in 1..5
+        print("Itération " + i)
+    end
+end
+
+main()
