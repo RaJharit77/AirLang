@@ -1,0 +1,223 @@
+# Calculatrice interactive en AirLang
+# Exemple 3 — Montre : match, boucles, Result, gestion d'erreurs, io.input
+# Fichier : examples/calculator.air
+
+import io
+import math
+
+## Représente une opération de calcul avec son historique.
+blueprint Calculator
+    history: List[String] = []
+    memory:  Float        = 0.0
+
+    ## Effectue une opération et retourne le résultat.
+    fun calculate(a: Float, op: String, b: Float) -> Result[Float]
+        result = match op
+            "+"   => Ok(a + b)
+            "-"   => Ok(a - b)
+            "*"   => Ok(a * b)
+            "/"   => if b == 0.0
+                         Err("Division par zéro impossible")
+                     else
+                         Ok(a / b)
+                     end
+            "%"   => if b == 0.0
+                         Err("Modulo par zéro impossible")
+                     else
+                         Ok(a - math.floor(a / b) * b)
+                     end
+            "**"  => Ok(math.pow(a, b))
+            _     => Err("Opérateur inconnu : " + op)
+        end
+        return result
+    end
+
+    ## Enregistre une opération dans l'historique.
+    fun record(a: Float, op: String, b: Float, result: Float)
+        entry = float_to_str(a) + " " + op + " " + float_to_str(b) + " = " + float_to_str(result)
+        history.append(entry)
+    end
+
+    ## Affiche l'historique des calculs.
+    fun show_history()
+        if history.length() == 0
+            print("  (aucun calcul pour l'instant)")
+        else
+            for i, entry in history
+                print("  " + (i + 1) + ". " + entry)
+            end
+        end
+    end
+
+    ## Sauvegarde la valeur en mémoire.
+    fun mem_store(value: Float)
+        memory = value
+        print("→ Mémoire : " + float_to_str(value) + " sauvegardé")
+    end
+
+    ## Rappelle la valeur en mémoire.
+    fun mem_recall() -> Float
+        print("→ Mémoire : " + float_to_str(memory))
+        return memory
+    end
+
+    ## Réinitialise la mémoire.
+    fun mem_clear()
+        memory = 0.0
+        print("→ Mémoire effacée")
+    end
+end
+
+
+## Convertit un Float en String lisible (supprime le .0 pour les entiers).
+fun float_to_str(n: Float) -> String
+    if n == math.floor(n) and math.abs(n) < 1000000000.0
+        return int_to_str(n)
+    end
+    return n
+end
+
+## Convertit un Float entier en String sans décimale.
+fun int_to_str(n: Float) -> String
+    @native("air_float_to_int_str")
+end
+
+## Parse une chaîne en Float. Retourne null si invalide.
+fun parse_float(s: String) -> Float?
+    trimmed = s.trim()
+    if trimmed == ""
+        return null
+    end
+    for ch in trimmed
+        if not (ch >= "0" and ch <= "9") and ch != "." and ch != "-"
+            return null
+        end
+    end
+    return s.to_float()
+end
+
+## Affiche l'aide.
+fun show_help()
+    print("")
+    print("╔══════════════════════════════════════╗")
+    print("║       Calculatrice AirLang v0.1      ║")
+    print("╠══════════════════════════════════════╣")
+    print("║  Usage : <nombre> <op> <nombre>      ║")
+    print("║  Opérateurs : + - * / % **           ║")
+    print("║  Commandes :                         ║")
+    print("║    hist     — historique             ║")
+    print("║    ms       — sauvegarder en mémoire ║")
+    print("║    mr       — rappeler la mémoire    ║")
+    print("║    mc       — effacer la mémoire     ║")
+    print("║    sqrt <n> — racine carrée          ║")
+    print("║    help     — cette aide             ║")
+    print("║    quit     — quitter                ║")
+    print("╚══════════════════════════════════════╝")
+    print("")
+end
+
+## Point d'entrée principal.
+fun main()
+    calc = Calculator.new()
+    last_result: Float = 0.0
+
+    show_help()
+
+    while true
+        line = io.input("calc> ")
+        trimmed = line.trim()
+
+        if trimmed == "" or trimmed == "quit" or trimmed == "exit"
+            if trimmed == "" then continue end
+            print("Au revoir !")
+            break
+        end
+
+        if trimmed == "help"
+            show_help()
+            continue
+        end
+
+        if trimmed == "hist"
+            print("── Historique ──────────────────")
+            calc.show_history()
+            print("")
+            continue
+        end
+
+        if trimmed == "ms"
+            calc.mem_store(last_result)
+            continue
+        end
+
+        if trimmed == "mr"
+            last_result = calc.mem_recall()
+            continue
+        end
+
+        if trimmed == "mc"
+            calc.mem_clear()
+            continue
+        end
+
+        # sqrt <n>
+        if trimmed.starts_with("sqrt ")
+            arg_str = trimmed.slice(5, trimmed.length()).trim()
+            arg = parse_float(arg_str)
+            if arg == null
+                print("✘ Nombre invalide : " + arg_str)
+                continue
+            end
+            if arg < 0.0
+                print("✘ Racine carrée d'un nombre négatif impossible")
+                continue
+            end
+            result = math.sqrt(arg)
+            print("√" + float_to_str(arg) + " = " + float_to_str(result))
+            last_result = result
+            calc.history.append("sqrt(" + float_to_str(arg) + ") = " + float_to_str(result))
+            continue
+        end
+
+        # Parsing : "a op b"
+        parts = trimmed.split(" ")
+        parts = parts.filter(fun(p) => p.trim() != "")
+
+        if parts.length() != 3
+            print("✘ Format attendu : <nombre> <opérateur> <nombre>")
+            print("  Exemple : 10 + 5   ou   2 ** 8")
+            continue
+        end
+
+        a_str = parts.get(0)
+        op    = parts.get(1)
+        b_str = parts.get(2)
+
+        # Remplace "ans" par le dernier résultat
+        if a_str == "ans" then a_str = float_to_str(last_result) end
+        if b_str == "ans" then b_str = float_to_str(last_result) end
+
+        a = parse_float(a_str)
+        b = parse_float(b_str)
+
+        if a == null
+            print("✘ Nombre invalide : " + a_str)
+            continue
+        end
+        if b == null
+            print("✘ Nombre invalide : " + b_str)
+            continue
+        end
+
+        match calc.calculate(a, op, b)
+            Ok(value) =>
+                print("  = " + float_to_str(value))
+                calc.record(a, op, b, value)
+                last_result = value
+            Err(msg) =>
+                print("✘ Erreur : " + msg)
+        end
+    end
+end
+
+main()

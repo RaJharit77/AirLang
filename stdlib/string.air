@@ -1,0 +1,108 @@
+## Module : string
+## Manipulation de chaînes de caractères.
+## Import : import string
+
+## Découpe une chaîne selon un séparateur.
+## Exemple : parts = string.split("a,b,c", ",")  # => ["a", "b", "c"]
+export fun split(s: String, sep: String) -> List[String]
+    @native("air_string_split")
+end
+
+## Assemble une liste de chaînes avec un séparateur.
+## Exemple : string.join(["a", "b", "c"], ", ")  # => "a, b, c"
+export fun join(parts: List[String], sep: String) -> String
+    @native("air_string_join")
+end
+
+## Supprime les espaces en début et fin de chaîne.
+## Exemple : string.trim("  bonjour  ")  # => "bonjour"
+export fun trim(s: String) -> String
+    @native("air_string_trim")
+end
+
+## Supprime les espaces uniquement en début de chaîne.
+export fun trim_left(s: String) -> String
+    @native("air_string_trim_left")
+end
+
+## Supprime les espaces uniquement en fin de chaîne.
+export fun trim_right(s: String) -> String
+    @native("air_string_trim_right")
+end
+
+## Remplace toutes les occurrences de old par new.
+## Exemple : string.replace("bonjour monde", "monde", "Alice")
+export fun replace(s: String, old: String, new: String) -> String
+    @native("air_string_replace")
+end
+
+## Vérifie si une chaîne contient une sous-chaîne.
+## Exemple : string.contains("bonjour", "jour")  # => true
+export fun contains(s: String, sub: String) -> Bool
+    @native("air_string_contains")
+end
+
+## Vérifie si une chaîne commence par un préfixe.
+## Exemple : string.starts_with("bonjour", "bon")  # => true
+export fun starts_with(s: String, prefix: String) -> Bool
+    @native("air_string_starts_with")
+end
+
+## Vérifie si une chaîne se termine par un suffixe.
+## Exemple : string.ends_with("fichier.air", ".air")  # => true
+export fun ends_with(s: String, suffix: String) -> Bool
+    @native("air_string_ends_with")
+end
+
+## Convertit une chaîne en majuscules.
+## Exemple : string.upper("bonjour")  # => "BONJOUR"
+export fun upper(s: String) -> String
+    @native("air_string_upper")
+end
+
+## Convertit une chaîne en minuscules.
+## Exemple : string.lower("BONJOUR")  # => "bonjour"
+export fun lower(s: String) -> String
+    @native("air_string_lower")
+end
+
+## Retourne la position de la première occurrence d'une sous-chaîne (-1 si absente).
+## Exemple : string.index_of("bonjour", "jour")  # => 3
+export fun index_of(s: String, sub: String) -> Int
+    @native("air_string_index_of")
+end
+
+## Répète une chaîne n fois.
+## Exemple : string.repeat("ab", 3)  # => "ababab"
+export fun repeat(s: String, n: Int) -> String
+    @native("air_string_repeat")
+end
+
+## Inverse une chaîne.
+## Exemple : string.reverse("AirLang")  # => "gnaLriA"
+export fun reverse(s: String) -> String
+    @native("air_string_reverse")
+end
+
+## Extrait une sous-chaîne entre les positions start (inclus) et end (exclus).
+## Exemple : string.slice("bonjour", 0, 3)  # => "bon"
+export fun slice(s: String, start: Int, end: Int) -> String
+    @native("air_string_slice")
+end
+
+## Retourne la longueur d'une chaîne en octets.
+export fun length(s: String) -> Int
+    @native("air_string_length")
+end
+
+## Convertit une chaîne en entier.
+## Exemple : string.to_int("42")  # => 42
+export fun to_int(s: String) -> Int
+    @native("air_string_to_int")
+end
+
+## Convertit une chaîne en flottant.
+## Exemple : string.to_float("3.14")  # => 3.14
+export fun to_float(s: String) -> Float
+    @native("air_string_to_float")
+end

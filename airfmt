@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+"""
+airfmt — Formatter de code AirLang v0.1
+Formate un fichier .air selon le style officiel AirLang.
+
+Usage:
+    airfmt <file.air>           Formate et affiche sur stdout
+    airfmt <file.air> --write   Écrase le fichier avec le code formaté
+    airfmt <file.air> --check   Vérifie si le fichier est déjà formaté (exit 1 sinon)
+    airfmt --help               Affiche cette aide
+
+Style AirLang :
+  - Indentation : 4 espaces (jamais de tabulations)
+  - Une ligne vide entre les définitions de fonctions/blueprints
+  - Pas d'espaces en fin de ligne
+  - Alignement des : dans les déclarations de champs
+  - Opérateurs entourés d'un espace
+  - Virgules suivies d'un espace
+"""
+
+import sys
+import os
+import re
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "compiler"))
+
+from lexer import Lexer, TokenType, LexerError
+
+
+INDENT     = "    "   # 4 espaces
+INDENT_INC = {"fun", "blueprint", "trait", "if", "else", "for", "while",
+              "match", "unless", "try", "catch"}
+INDENT_DEC = {"end", "else"}
+
+
+class Formatter:
+    """Reformate du code AirLang selon les règles de style officielles."""
+
+    def __init__(self, source: str, filename: str = "<source>"):
+        self.source   = source
+        self.filename = filename
+        self.lines    = source.splitlines()
+
+    # ── Étape 1 : normalisation ligne par ligne ───────────────────────────────
+
+    def normalize_line(self, line: str) -> str:
+        """Applique les règles de style sur une seule ligne."""
+        # Supprimer les espaces de fin
+        line = line.rstrip()
+        if not line.strip():
+            return ""
+
+        # Conserver les commentaires intacts (sauf trim trailing)
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            indent_count = len(line) - len(stripped)
+            return " " * indent_count + stripped
+
+        # Reconstruire l'indentation en multiple de 4
+        indent_count = len(line) - len(stripped)
+        indent_count = (indent_count // 4) * 4
+        indent = " " * indent_count
+
+        body = self.format_expression(stripped)
+        return indent + body
+
+    def format_expression(self, s: str) -> str:
+        """Applique les règles d'espacement aux opérateurs et ponctuations."""
+        # Espacement autour des opérateurs binaires
+        # Ordre important : opérateurs longs avant courts
+        two_char = ["==", "!=", "<=", ">=", "->", "=>", "+=", "-=", "*=", "/=", ".."]
+        for op in two_char:
+            s = re.sub(r'\s*' + re.escape(op) + r'\s*', f' {op} ', s)
+
+        # Opérateurs simples (sauf dans les chaînes)
+        # On ne reformate pas à l'intérieur des guillemets
+        parts = self._split_strings(s)
+        result_parts = []
+        for text, is_str in parts:
+            if is_str:
+                result_parts.append(text)
+            else:
+                # Espace après virgule
+                text = re.sub(r',\s*', ', ', text)
+                # Pas d'espace avant : mais espace après (annotations de type)
+                text = re.sub(r'\s*:\s*', ': ', text)
+                # Espace autour de = seul (pas ==)
+                text = re.sub(r'(?<![=!<>+\-*/])=(?![=>])', ' = ', text)
+                # Supprimer les espaces multiples (sauf indentation)
+                text = re.sub(r'  +', ' ', text)
+                result_parts.append(text)
+        return "".join(result_parts).strip()
+
+    def _split_strings(self, s: str):
+        """Découpe une ligne en segments (texte normal, chaîne entre guillemets)."""
+        parts = []
+        i = 0
+        while i < len(s):
+            if s[i] == '"':
+                j = i + 1
+                while j < len(s):
+                    if s[j] == '\\':
+                        j += 2
+                    elif s[j] == '"':
+                        j += 1
+                        break
+                    else:
+                        j += 1
+                parts.append((s[i:j], True))
+                i = j
+            else:
+                # Cherche le prochain guillemet
+                j = s.find('"', i)
+                chunk = s[i:] if j == -1 else s[i:j]
+                if chunk:
+                    parts.append((chunk, False))
+                i = i + len(chunk)
+        return parts
+
+    # ── Étape 2 : gestion de l'indentation ────────────────────────────────────
+
+    def fix_indentation(self, lines: list) -> list:
+        """Recalcule l'indentation en fonction des mots-clés."""
+        result = []
+        depth  = 0
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                result.append("")
+                continue
+
+            # Mots-clés qui diminuent d'abord (end, else)
+            first_word = stripped.split()[0]
+            if first_word in INDENT_DEC:
+                depth = max(0, depth - 1)
+
+            result.append(INDENT * depth + stripped)
+
+            # Mots-clés qui augmentent après
+            if first_word in INDENT_INC:
+                depth += 1
+
+        return result
+
+    # ── Étape 3 : espacement entre blocs ─────────────────────────────────────
+
+    def add_blank_lines(self, lines: list) -> list:
+        """Ajoute une ligne vide avant chaque fun/blueprint/trait de niveau 0."""
+        result = []
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            first = stripped.split()[0] if stripped else ""
+            # Ligne vide avant les déclarations de haut niveau
+            if first in ("fun", "blueprint", "trait", "export") and i > 0:
+                prev = lines[i-1].strip() if i > 0 else ""
+                if prev and prev != "":
+                    result.append("")
+            result.append(line)
+        return result
+
+    # ── Étape 4 : alignement des champs dans les blueprints ──────────────────
+
+    def align_fields(self, lines: list) -> list:
+        """Aligne les : dans les blocs de champs consécutifs."""
+        result = list(lines)
+        i = 0
+        while i < len(result):
+            line = result[i]
+            stripped = line.strip()
+            # Repère un champ : "nom: Type"
+            if re.match(r'^[a-zA-Z_]\w*\s*:', stripped) and not stripped.startswith(("fun", "if", "for")):
+                # Collecte le groupe de champs consécutifs
+                group_start = i
+                group_end   = i
+                while group_end < len(result):
+                    s = result[group_end].strip()
+                    if re.match(r'^[a-zA-Z_]\w*\s*:', s) and not s.startswith(("fun", "if")):
+                        group_end += 1
+                    else:
+                        break
+
+                if group_end - group_start > 1:
+                    # Trouve la longueur max du nom
+                    group = result[group_start:group_end]
+                    indent_str = re.match(r'^(\s*)', group[0]).group(1)
+                    names_len  = []
+                    for gl in group:
+                        m = re.match(r'^\s*([a-zA-Z_]\w*)', gl)
+                        names_len.append(len(m.group(1)) if m else 0)
+                    max_len = max(names_len)
+
+                    # Réaligne
+                    new_group = []
+                    for gl, nlen in zip(group, names_len):
+                        m = re.match(r'^\s*([a-zA-Z_]\w*)\s*:(.*)', gl)
+                        if m:
+                            padding = " " * (max_len - nlen)
+                            new_group.append(f"{indent_str}{m.group(1)}{padding}: {m.group(2).strip()}")
+                        else:
+                            new_group.append(gl)
+                    result[group_start:group_end] = new_group
+                i = group_end
+            else:
+                i += 1
+        return result
+
+    # ── Pipeline complet ──────────────────────────────────────────────────────
+
+    def format(self) -> str:
+        """Applique toutes les étapes de formatage et retourne le code formaté."""
+        lines = [self.normalize_line(l) for l in self.lines]
+        lines = self.fix_indentation(lines)
+        lines = self.add_blank_lines(lines)
+        lines = self.align_fields(lines)
+
+        # Supprimer les lignes vides multiples consécutives
+        cleaned = []
+        blank_count = 0
+        for line in lines:
+            if line.strip() == "":
+                blank_count += 1
+                if blank_count <= 1:
+                    cleaned.append("")
+            else:
+                blank_count = 0
+                cleaned.append(line)
+
+        # Supprimer les lignes vides en fin de fichier
+        while cleaned and cleaned[-1].strip() == "":
+            cleaned.pop()
+
+        return "\n".join(cleaned) + "\n"
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+BANNER = "airfmt — AirLang Formatter v0.1"
+
+
+def main():
+    args  = sys.argv[1:]
+    flags = {a for a in args if a.startswith("--")}
+    files = [a for a in args if not a.startswith("--")]
+
+    if not files or "--help" in flags:
+        print(BANNER)
+        print(__doc__)
+        return 0
+
+    all_ok = True
+    for filepath in files:
+        if not os.path.exists(filepath):
+            print(f"airfmt: fichier introuvable : {filepath}", file=sys.stderr)
+            all_ok = False
+            continue
+
+        if not filepath.endswith((".air", ".a")):
+            print(f"airfmt: ⚠ extension inattendue : {filepath}", file=sys.stderr)
+
+        with open(filepath, "r", encoding="utf-8") as f:
+            source = f.read()
+
+        try:
+            formatter = Formatter(source, filepath)
+            formatted = formatter.format()
+        except LexerError as e:
+            print(f"airfmt: erreur de lexer : {e}", file=sys.stderr)
+            all_ok = False
+            continue
+
+        if "--check" in flags:
+            if source == formatted:
+                print(f"✓  {filepath}  (déjà formaté)")
+            else:
+                print(f"✘  {filepath}  (nécessite un formatage)")
+                all_ok = False
+        elif "--write" in flags:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(formatted)
+            print(f"✓  {filepath}  (formaté)")
+        else:
+            # Stdout par défaut
+            print(formatted, end="")
+
+    return 0 if all_ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

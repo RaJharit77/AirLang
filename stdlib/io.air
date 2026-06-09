@@ -1,0 +1,55 @@
+## Module : io
+## Entrées/Sorties fichiers et console.
+## Import : import io
+
+## Lit un fichier entier et retourne son contenu.
+## Exemple : content = io.read("config.json")
+export fun read(path: String) -> String
+    @native("air_io_read")
+end
+
+## Écrit (ou écrase) un fichier. Retourne true si succès.
+## Exemple : io.write("output.txt", "Bonjour")
+export fun write(path: String, content: String) -> Bool
+    @native("air_io_write")
+end
+
+## Ajoute du contenu à la fin d'un fichier sans l'écraser.
+## Exemple : io.append("log.txt", "nouvelle ligne\n")
+export fun append(path: String, content: String) -> Bool
+    @native("air_io_append")
+end
+
+## Vérifie si un fichier ou dossier existe.
+## Exemple : if io.exists("data.csv") then ... end
+export fun exists(path: String) -> Bool
+    @native("air_io_exists")
+end
+
+## Supprime un fichier. Retourne true si succès.
+## Exemple : io.delete("temp.txt")
+export fun delete(path: String) -> Bool
+    @native("air_io_delete")
+end
+
+## Retourne le contenu d'un fichier sous forme de liste de lignes.
+## Exemple : for line in io.lines("data.txt") ... end
+export fun lines(path: String) -> List[String]
+    @native("air_io_lines")
+end
+
+## Affiche une valeur sur la sortie standard (sans saut de ligne).
+export fun print(value: String)
+    @native("air_io_print")
+end
+
+## Affiche une valeur avec saut de ligne.
+export fun println(value: String)
+    @native("air_io_println")
+end
+
+## Affiche un prompt et lit une ligne depuis le clavier.
+## Exemple : name = io.input("Ton nom : ")
+export fun input(prompt: String) -> String
+    @native("air_io_input")
+end

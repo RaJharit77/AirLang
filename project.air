@@ -1,0 +1,38 @@
+# project.air — Fichier de projet AirLang
+# Définit le nom, la version et les métadonnées du projet.
+# Ce fichier est lu par le compilateur airc et le gestionnaire de packages.
+
+project = "airlang"
+version = "0.1.0"
+description = "AirLang — Simple comme respirer. Léger comme l'air."
+authors = ["AirLang Team"]
+license = "MIT"
+
+# Point d'entrée principal du programme
+main = "examples/hello.air"
+
+# Version minimale du compilateur AirLang requise
+requires_airc = "0.1.0"
+
+# Dépendances locales (modules .air internes)
+# Format : nom = chemin relatif
+[deps]
+# utils = "./lib/utils"
+
+# Dépendances futures (gestionnaire de packages, S5+)
+# [packages]
+# json-extra = "1.0.0"
+
+# Options de compilation
+[build]
+# target = "native"         # native | wasm (futur)
+# optimize = false          # true active les optimisations C
+# debug = true              # inclut les infos de débogage
+# output_dir = "./build"
+
+# Configuration du formatter airfmt
+[fmt]
+indent = 4                   # Taille de l'indentation (espaces)
+max_line_length = 100        # Longueur max d'une ligne
+align_fields = true          # Aligner les : dans les blueprints
+trailing_newline = true      # Toujours terminer le fichier par une ligne vide

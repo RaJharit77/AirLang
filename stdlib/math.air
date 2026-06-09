@@ -1,0 +1,168 @@
+## Module : math
+## Fonctions mathématiques.
+## Import : import math
+
+## Valeur absolue d'un nombre.
+## Exemple : math.abs(-5.0)  # => 5.0
+export fun abs(x: Float) -> Float
+    @native("air_math_abs")
+end
+
+## x élevé à la puissance e.
+## Exemple : math.pow(2.0, 10.0)  # => 1024.0
+export fun pow(base: Float, exp: Float) -> Float
+    @native("air_math_pow")
+end
+
+## Racine carrée.
+## Exemple : math.sqrt(16.0)  # => 4.0
+export fun sqrt(x: Float) -> Float
+    @native("air_math_sqrt")
+end
+
+## Arrondi vers le bas (plancher).
+## Exemple : math.floor(3.7)  # => 3.0
+export fun floor(x: Float) -> Float
+    @native("air_math_floor")
+end
+
+## Arrondi vers le haut (plafond).
+## Exemple : math.ceil(3.2)  # => 4.0
+export fun ceil(x: Float) -> Float
+    @native("air_math_ceil")
+end
+
+## Arrondi au plus proche.
+## Exemple : math.round(3.5)  # => 4.0
+export fun round(x: Float) -> Float
+    @native("air_math_round")
+end
+
+## Logarithme naturel (base e).
+export fun log(x: Float) -> Float
+    @native("air_math_log")
+end
+
+## Logarithme en base 2.
+export fun log2(x: Float) -> Float
+    @native("air_math_log2")
+end
+
+## Logarithme en base 10.
+export fun log10(x: Float) -> Float
+    @native("air_math_log10")
+end
+
+## Sinus (en radians).
+export fun sin(x: Float) -> Float
+    @native("air_math_sin")
+end
+
+## Cosinus (en radians).
+export fun cos(x: Float) -> Float
+    @native("air_math_cos")
+end
+
+## Tangente (en radians).
+export fun tan(x: Float) -> Float
+    @native("air_math_tan")
+end
+
+## Arctangente2 (angle entre l'axe x et le point (x, y)).
+export fun atan2(y: Float, x: Float) -> Float
+    @native("air_math_atan2")
+end
+
+## Retourne le plus petit des deux nombres.
+## Exemple : math.min(3.0, 7.0)  # => 3.0
+export fun min(a: Float, b: Float) -> Float
+    @native("air_math_min")
+end
+
+## Retourne le plus grand des deux nombres.
+## Exemple : math.max(3.0, 7.0)  # => 7.0
+export fun max(a: Float, b: Float) -> Float
+    @native("air_math_max")
+end
+
+## Limite une valeur dans un intervalle [lo, hi].
+## Exemple : math.clamp(150.0, 0.0, 100.0)  # => 100.0
+export fun clamp(value: Float, lo: Float, hi: Float) -> Float
+    @native("air_math_clamp")
+end
+
+## Nombre aléatoire entre 0.0 (inclus) et 1.0 (exclus).
+## Exemple : dice = math.random()
+export fun random() -> Float
+    @native("air_math_random")
+end
+
+## Entier aléatoire dans l'intervalle [min, max] (inclus).
+## Exemple : d6 = math.random_int(1, 6)
+export fun random_int(min: Int, max: Int) -> Int
+    @native("air_math_random_int")
+end
+
+## Constante Pi (3.14159...).
+export const PI: Float = 3.14159265358979323846
+
+## Constante e (2.71828...).
+export const E: Float = 2.71828182845904523536
+
+## Convertit des degrés en radians.
+## Exemple : math.to_rad(180.0)  # => 3.14159...
+export fun to_rad(degrees: Float) -> Float
+    return degrees * PI / 180.0
+end
+
+## Convertit des radians en degrés.
+## Exemple : math.to_deg(math.PI)  # => 180.0
+export fun to_deg(radians: Float) -> Float
+    return radians * 180.0 / PI
+end
+
+## Vérifie si un entier est pair.
+export fun is_even(n: Int) -> Bool
+    return n % 2 == 0
+end
+
+## Vérifie si un entier est impair.
+export fun is_odd(n: Int) -> Bool
+    return n % 2 != 0
+end
+
+## Calcule le plus grand commun diviseur (algorithme d'Euclide).
+export fun gcd(a: Int, b: Int) -> Int
+    while b != 0
+        temp = b
+        b = a % b
+        a = temp
+    end
+    return a
+end
+
+## Calcule le plus petit commun multiple.
+export fun lcm(a: Int, b: Int) -> Int
+    return a / gcd(a, b) * b
+end
+
+## Vérifie si un entier est un nombre premier.
+export fun is_prime(n: Int) -> Bool
+    if n < 2
+        return false
+    end
+    if n == 2
+        return true
+    end
+    if n % 2 == 0
+        return false
+    end
+    i = 3
+    while i * i <= n
+        if n % i == 0
+            return false
+        end
+        i = i + 2
+    end
+    return true
+end

@@ -1,0 +1,111 @@
+## Module : list
+## Manipulation de listes.
+## Import : import list  (ou utiliser les méthodes directement sur la liste)
+
+## Retourne le nombre d'éléments d'une liste.
+## Exemple : list.length([1, 2, 3])  # => 3
+export fun length(lst: List[Any]) -> Int
+    @native("air_list_length")
+end
+
+## Retourne l'élément à l'index i (supporte les index négatifs : -1 = dernier).
+## Exemple : list.get(items, 0)
+export fun get(lst: List[Any], i: Int) -> Any
+    @native("air_list_get")
+end
+
+## Modifie l'élément à l'index i.
+## Exemple : list.set(items, 0, "nouveau")
+export fun set(lst: List[Any], i: Int, value: Any)
+    @native("air_list_set")
+end
+
+## Ajoute un élément à la fin de la liste.
+## Exemple : list.append(items, "Alice")
+export fun append(lst: List[Any], item: Any)
+    @native("air_list_append")
+end
+
+## Insère un élément au début de la liste.
+## Exemple : list.prepend(items, "premier")
+export fun prepend(lst: List[Any], item: Any)
+    @native("air_list_prepend")
+end
+
+## Supprime et retourne le dernier élément.
+## Exemple : last = list.pop(items)
+export fun pop(lst: List[Any]) -> Any
+    @native("air_list_pop")
+end
+
+## Supprime et retourne le premier élément.
+## Exemple : first = list.pop_front(items)
+export fun pop_front(lst: List[Any]) -> Any
+    @native("air_list_pop_front")
+end
+
+## Retourne une nouvelle liste avec chaque élément transformé par fn.
+## Exemple : doubled = list.map(numbers, fun(x) => x * 2)
+export fun map(lst: List[Any], fn: Fun) -> List[Any]
+    @native("air_list_map")
+end
+
+## Retourne une nouvelle liste avec uniquement les éléments où fn retourne true.
+## Exemple : evens = list.filter(numbers, fun(x) => x % 2 == 0)
+export fun filter(lst: List[Any], fn: Fun) -> List[Any]
+    @native("air_list_filter")
+end
+
+## Réduit la liste à une valeur unique via fn(accumulateur, élément).
+## Exemple : total = list.reduce(numbers, 0, fun(acc, x) => acc + x)
+export fun reduce(lst: List[Any], initial: Any, fn: Fun) -> Any
+    @native("air_list_reduce")
+end
+
+## Trie la liste en place selon une fonction de comparaison.
+## Exemple : list.sort(names, fun(a, b) => a < b)
+export fun sort(lst: List[Any], cmp_fn: Fun)
+    @native("air_list_sort")
+end
+
+## Retourne une nouvelle liste sans doublons.
+## Exemple : unique_names = list.unique(names)
+export fun unique(lst: List[Any]) -> List[Any]
+    @native("air_list_unique")
+end
+
+## Aplatit une liste de listes en une liste simple.
+## Exemple : list.flatten([[1, 2], [3, 4]])  # => [1, 2, 3, 4]
+export fun flatten(lst: List[List[Any]]) -> List[Any]
+    @native("air_list_flatten")
+end
+
+## Retourne une nouvelle liste avec les éléments en ordre inverse.
+## Exemple : list.reverse([1, 2, 3])  # => [3, 2, 1]
+export fun reverse(lst: List[Any]) -> List[Any]
+    @native("air_list_reverse")
+end
+
+## Retourne une sous-liste entre start (inclus) et end (exclus).
+## Exemple : list.slice(items, 1, 3)
+export fun slice(lst: List[Any], start: Int, end: Int) -> List[Any]
+    @native("air_list_slice")
+end
+
+## Concatène deux listes en une nouvelle liste.
+## Exemple : all = list.concat(list_a, list_b)
+export fun concat(a: List[Any], b: List[Any]) -> List[Any]
+    @native("air_list_concat")
+end
+
+## Vérifie si un élément est présent dans la liste.
+## Exemple : list.contains(names, "Alice")
+export fun contains(lst: List[Any], item: Any) -> Bool
+    @native("air_list_contains")
+end
+
+## Retourne l'index du premier élément égal à item (-1 si absent).
+## Exemple : i = list.index_of(names, "Bob")
+export fun index_of(lst: List[Any], item: Any) -> Int
+    @native("air_list_index_of")
+end
