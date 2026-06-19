@@ -55,7 +55,7 @@ def compile_and_run(src: str, stdin_input: str = "") -> tuple[str, int]:
             sources.append(stdlib_c)
 
         result = subprocess.run(
-            ["gcc", "-o", exe, "-I", RUNTIME_DIR, "-lm"] + sources,
+            ["gcc", "-o", exe, "-I", RUNTIME_DIR] + sources + ["-lm"],
             capture_output=True, text=True
         )
         if result.returncode != 0:
