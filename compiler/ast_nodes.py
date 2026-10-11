@@ -16,6 +16,13 @@ class Node:
     """Nœud de base — tous les nœuds AST héritent de celui-ci."""
     line:   int = 0
     column: int = 0
+    # Type calculé par le type checker (AirType) ; None avant l'analyse.
+    # Le codegen s'appuie dessus : il ne devine jamais un type.
+    ty:     Any = field(default=None, repr=False, compare=False)
+    # Le type checker peut aussi poser d'autres annotations (non déclarées ici) :
+    #   Identifier.kind ("local" | "global" | "field"), Assign.declares,
+    #   Call.resolved / MethodCall.resolved / NewInstance.resolved (arguments
+    #   ordonnés avec valeurs par défaut), MethodCall.owner, ForStmt.var_type…
 
     def accept(self, visitor):
         """Appelle visitor.visit_<NomClasse>(self)."""
@@ -52,6 +59,11 @@ class BoolLiteral(Node):
 @dataclass
 class NullLiteral(Node):
     pass
+
+@dataclass
+class InterpolatedString(Node):
+    """"texte {expr} texte" — parts : liste de str et de nœuds expression."""
+    parts: List[Any] = field(default_factory=list)
 
 @dataclass
 class ListLiteral(Node):
@@ -307,7 +319,8 @@ def pretty(node: Any, depth: int = 0) -> str:
     if isinstance(node, Node):
         cls  = type(node).__name__
         flds = {k: v for k, v in node.__dict__.items()
-                if k not in ("line", "column") and v not in (None, [], {})}
+                if k not in ("line", "column", "ty") and v not in (None, [], {})
+                and not callable(v)}
         if not flds:
             return f"{pad}{cls}()"
         lines = [f"{pad}{cls}"]

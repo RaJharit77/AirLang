@@ -1,0 +1,92 @@
+# Parcourt les fonctionnalités de la v0.2
+const MAX = 3
+counter = 0
+
+fun fact(n: Int) -> Int
+    if n <= 1
+        return 1
+    end
+    return n * fact(n - 1)
+end
+
+fun avg(a: Int, b: Int)
+    return (a + b) / 2.0
+end
+
+fun greet(name: String, punct: String = "!")
+    return "Salut {name}{punct}"
+end
+
+fun bump()
+    counter = counter + 1
+end
+
+blueprint Person
+    name: String
+    age:  Int = 18
+
+    fun birthday()
+        age = age + 1
+    end
+
+    fun describe() -> String
+        return "{name} a {age} ans"
+    end
+
+    fun is_adult() -> Bool
+        return age >= 18
+    end
+
+    fun twice()
+        birthday()
+        birthday()
+    end
+end
+
+fun main()
+    print(fact(5))
+    print(avg(3, 4))
+    print(greet("Ana"))
+    print(greet(punct: "?", name: "Bob"))
+    bump()
+    bump()
+    print("compteur = {counter}")
+
+    p = Person.new(name: "Zoé")
+    p.birthday()
+    p.twice()
+    print(p.describe())
+    print(p.is_adult(), p.age)
+    p.age = 40
+    print(p.age + 1)
+
+    total = 0
+    for i in 0..MAX
+        total += i
+    end
+    print("total {total}")
+    f = 1.0
+    f *= 2.5
+    print(f)
+
+    s = "  Air Lang  ".trim()
+    print(s.upper(), s.lower(), s.length(), s.contains("Lang"))
+    status = if total > 2 then "grand" else "petit" end
+    print(status)
+    unless total == 0
+        print("non nul")
+    end
+    match status
+        "grand" => print("G")
+        "petit" => print("P")
+        _       => print("?")
+    end
+    ok = total == 3 and not (f < 1.0)
+    print(ok, -total, 7 % 4, 2 + 3 * 4)
+    print(str(42) + "!", int("12") + 1, float(3) / 2, len("héllo"))
+    print("accolade \{ ok \} et tab[\t]")
+    print()
+    print("fin")
+end
+
+main()

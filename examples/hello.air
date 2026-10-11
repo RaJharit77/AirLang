@@ -9,7 +9,7 @@ fun main()
 
     # Boucle simple
     for i in 1..5
-        print("Itération " + i)
+        print("Itération {i}")
     end
 end
 

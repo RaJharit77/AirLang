@@ -7,9 +7,9 @@ Lancer : python3 -m pytest tests/test_lexer.py -v
 
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "compiler"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from lexer import Lexer, Token, TokenType, LexerError
+from compiler.lexer import Lexer, Token, TokenType, LexerError
 import traceback
 
 
