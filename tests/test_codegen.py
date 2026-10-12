@@ -11,12 +11,9 @@ import os
 import subprocess
 import tempfile
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "compiler"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from lexer        import Lexer
-from parser       import Parser
-from type_checker import TypeChecker
-from codegen_c    import CCodegen
+from compiler import driver
 import traceback
 
 
@@ -26,12 +23,7 @@ RUNTIME_DIR = os.path.join(os.path.dirname(__file__), "..", "runtime")
 
 def compile_to_c(src: str) -> str:
     """Compile du code AirLang en code C (sans exécuter)."""
-    tokens  = Lexer(src).tokenize()
-    ast     = Parser(tokens, source=src).parse()
-    checker = TypeChecker()
-    checker.check(ast)
-    gen     = CCodegen()
-    return gen.generate(ast)
+    return driver.compile_to_c(src, "<test>")   # lève CompileErrors si le programme est invalide
 
 def compile_and_run(src: str, stdin_input: str = "") -> tuple[str, int]:
     """
@@ -120,17 +112,17 @@ def test_codegen_blueprint_struct():
     assert "struct" in c or "typedef" in c
 
 def test_codegen_if_statement():
-    src = "fun _t()\n    if x > 0\n        return 1\n    end\nend"
+    src = "fun _t(x: Int) -> Int\n    if x > 0\n        return 1\n    end\n    return 0\nend"
     c = compile_to_c(src)
     assert "if" in c
 
 def test_codegen_while_loop():
-    src = "fun _t()\n    while count < 10\n        count = count + 1\n    end\nend"
+    src = "fun _t()\n    count = 0\n    while count < 10\n        count = count + 1\n    end\nend"
     c = compile_to_c(src)
     assert "while" in c
 
 def test_codegen_for_range():
-    src = "fun _t()\n    for i in 0..10\n        return i\n    end\nend"
+    src = "fun _t() -> Int\n    for i in 0..10\n        return i\n    end\n    return 0\nend"
     c = compile_to_c(src)
     assert "for" in c
 
@@ -138,7 +130,9 @@ def test_codegen_binary_ops():
     for op in ["+", "-", "*", "/", "%"]:
         src = f"fun _t(a: Int, b: Int)\n    return a {op} b\nend"
         c = compile_to_c(src)
-        assert op in c, f"Opérateur {op} absent du code généré"
+        # `/` et `%` passent par des helpers qui gardent la division par zéro
+        expected = {"/": "air_idiv", "%": "air_imod"}.get(op, op)
+        assert expected in c, f"Opérateur {op} absent du code généré"
 
 def test_codegen_main_function():
     src = "fun main()\n    return 0\nend\nmain()"

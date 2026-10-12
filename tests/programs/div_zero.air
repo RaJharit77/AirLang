@@ -1,0 +1,9 @@
+fun main()
+    a = 10
+    b = 0
+    print("avant")
+    print(a / b)
+    print("jamais atteint")
+end
+
+main()

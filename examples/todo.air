@@ -31,11 +31,11 @@ blueprint TodoList
         for task in tasks
             if task.id == id
                 task.complete()
-                print("Tâche " + id + " terminée !")
+                print("Tâche {id} terminée !")
                 return
             end
         end
-        print("Tâche " + id + " introuvable.")
+        print("Tâche {id} introuvable.")
     end
 
     fun pending() -> List[Task]
@@ -51,7 +51,7 @@ blueprint TodoList
                 task.display()
             end
             print("")
-            print("En attente : " + pending().length() + "/" + tasks.length())
+            print("En attente : {pending().length()}/{tasks.length()}")
         end
     end
 end

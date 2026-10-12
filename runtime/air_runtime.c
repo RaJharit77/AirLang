@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /*
  * air_runtime.c — Implémentation du runtime AirLang v0.1
  */
@@ -82,8 +83,12 @@ AirStr air_concat(AirStr a, AirStr b) {
     return air_str_concat(a, b);
 }
 
+/* Longueur en caractères Unicode (pas en octets) : on ignore les octets de continuation UTF-8. */
 int64_t air_str_length(AirStr s) {
-    return (int64_t)s.len;
+    int64_t n = 0;
+    for (size_t i = 0; i < s.len; i++)
+        if (((unsigned char)s.data[i] & 0xC0) != 0x80) n++;
+    return n;
 }
 
 AirStr air_str_upper(AirStr s) {
@@ -428,4 +433,31 @@ double air_random(void) {
 
 bool air_eq(AirVal a, AirVal b) {
     return a == b;   /* Par défaut : égalité de pointeur / valeur entière */
+}
+
+
+/* ── Conversions (v0.2) ─────────────────────────────────────────────────────── */
+
+AirStr air_bool_to_str(bool b) {
+    return b ? AIR_STR_LIT("true") : AIR_STR_LIT("false");
+}
+
+int64_t air_str_to_int(AirStr s) {
+    char* end = NULL;
+    long long v = strtoll(s.data ? s.data : "", &end, 10);
+    if (!s.data || s.len == 0 || *end != '\0') {
+        fprintf(stderr, "\nErreur d'exécution : \"%s\" n'est pas un entier\n", s.data ? s.data : "");
+        exit(1);
+    }
+    return (int64_t)v;
+}
+
+double air_str_to_float(AirStr s) {
+    char* end = NULL;
+    double v = strtod(s.data ? s.data : "", &end);
+    if (!s.data || s.len == 0 || *end != '\0') {
+        fprintf(stderr, "\nErreur d'exécution : \"%s\" n'est pas un nombre\n", s.data ? s.data : "");
+        exit(1);
+    }
+    return v;
 }

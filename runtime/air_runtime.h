@@ -82,6 +82,24 @@ int64_t air_str_length(AirStr s);
 AirStr  air_concat(AirStr a, AirStr b);
 AirStr  air_int_to_str(int64_t n);
 AirStr  air_float_to_str(double f);
+AirStr  air_bool_to_str(bool b);
+int64_t air_str_to_int(AirStr s);     /* panic si la chaîne n'est pas un entier */
+double  air_str_to_float(AirStr s);   /* panic si la chaîne n'est pas un nombre */
+bool    air_string_starts_with(AirStr s, AirStr prefix);
+bool    air_string_ends_with(AirStr s, AirStr suffix);
+
+/* Littéral de chaîne : pas d'allocation (stockage statique, ne jamais libérer) */
+#define AIR_STR_LIT(s) ((AirStr){ (char*)(s), sizeof(s) - 1 })
+
+/* Division/modulo entiers avec garde division par zéro */
+static inline int64_t air_idiv(int64_t a, int64_t b) {
+    if (b == 0) { fflush(stdout); fprintf(stderr, "\nErreur d'exécution : division par zéro\n"); exit(1); }
+    return a / b;
+}
+static inline int64_t air_imod(int64_t a, int64_t b) {
+    if (b == 0) { fflush(stdout); fprintf(stderr, "\nErreur d'exécution : modulo par zéro\n"); exit(1); }
+    return a % b;
+}
 
 /* ── Listes ─────────────────────────────────────────────────────────────────── */
 
@@ -159,7 +177,7 @@ bool air_eq(AirVal a, AirVal b);
 
 /* Panic */
 #define air_panic(msg) do { \
-    fprintf(stderr, "\n✘ AirLang Panic : %s\n  ligne %s:%d\n", msg, __FILE__, __LINE__); \
+    fflush(stdout); fprintf(stderr, "\n✘ AirLang Panic : %s\n  ligne %s:%d\n", msg, __FILE__, __LINE__); \
     exit(1); \
 } while(0)
 

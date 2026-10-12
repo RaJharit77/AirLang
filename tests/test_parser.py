@@ -5,11 +5,12 @@ Lancer : python3 tests/test_parser.py
 """
 
 import sys, os, traceback
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "compiler"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from lexer     import Lexer, TokenType
-from parser    import Parser
-from ast_nodes import *
+from compiler.lexer import Lexer, TokenType
+from compiler.parser import Parser
+from compiler.errors import ParseError
+from compiler.ast_nodes import *
 
 
 # ── Utilitaires ──────────────────────────────────────────────────────────────
@@ -170,10 +171,22 @@ def test_blueprint_field_default():
     assert isinstance(stmt.fields[0].default, BoolLiteral)
 
 def test_trait_declaration():
-    src = "trait Printable\n    fun to_string() -> String\n    end\nend"
+    # Spec §3.3 : une signature de trait n'a ni corps ni `end`.
+    src = "trait Printable\n    fun to_string() -> String\n    fun save()\nend"
     stmt = first_stmt(src)
     assert isinstance(stmt, TraitDecl)
     assert stmt.name == "Printable"
+    assert [m.name for m in stmt.methods] == ["to_string", "save"]
+
+def test_trait_followed_by_blueprint_terminates():
+    # Régression : cette entrée provoquait une boucle infinie dans parse_trait.
+    src = "trait T\n    fun run()\nend\nblueprint B implements T\n    x: Int\nend\n"
+    Parser(Lexer(src).tokenize()).parse()
+
+def test_trait_rejects_non_signature():
+    import pytest
+    with pytest.raises(ParseError):
+        Parser(Lexer("trait T\n    x = 1\nend\n").tokenize()).parse()
 
 
 # ── Structures de contrôle ────────────────────────────────────────────────────

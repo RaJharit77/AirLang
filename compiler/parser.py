@@ -6,9 +6,9 @@ Parser par descente récursive : transforme une liste de tokens en AST.
 from __future__ import annotations
 from typing import List, Optional
 
-from lexer import Token, TokenType, Lexer
-from ast_nodes import *
-from errors import ParseError, err_expected_token, err_expected_end
+from .lexer import Token, TokenType, Lexer
+from .ast_nodes import *
+from .errors import ParseError, err_expected_token, err_expected_end
 
 
 class Parser:
@@ -161,6 +161,18 @@ class Parser:
         return FunDecl(name=name, params=params, return_type=return_type,
                        body=body, decorators=decorators or [], **pos)
 
+    def parse_fun_signature(self) -> FunDecl:
+        """Signature de méthode de trait : `fun nom(params) [-> Type]`, sans corps ni `end`."""
+        pos = self._pos()
+        self.advance()  # fun
+        name = self.expect(TokenType.IDENT).value
+        params = self.parse_params()
+        return_type = None
+        if self.match(TokenType.ARROW):
+            return_type = self.parse_type_annotation()
+        return FunDecl(name=name, params=params, return_type=return_type,
+                       body=[], **pos)
+
     def parse_params(self) -> List[Param]:
         self.expect(TokenType.LPAREN)
         params = []
@@ -228,8 +240,13 @@ class Parser:
         name    = self.expect(TokenType.IDENT).value
         methods = []
         while not self.at(TokenType.END, TokenType.EOF):
-            if self.at(TokenType.FUN):
-                methods.append(self.parse_fun_decl())
+            if not self.at(TokenType.FUN):
+                tok = self.current()
+                raise err_expected_token("une signature `fun nom(...)`",
+                                         tok.value or tok.type.name,
+                                         tok.line, tok.column,
+                                         source=self.source, filename=self.filename)
+            methods.append(self.parse_fun_signature())
         self.expect_end("trait")
         return TraitDecl(name=name, methods=methods, **pos)
 
@@ -396,18 +413,22 @@ class Parser:
         pos  = self._pos()
         left = self.parse_and()
         while self.at(TokenType.OR):
-            op    = self.advance().value
+            optok = self.advance()
+            op    = optok.value
             right = self.parse_and()
-            left  = BinaryOp(left=left, op=op, right=right, **pos)
+            # la position d\'un BinaryOp est celle de l\'opérateur (erreurs plus précises)
+            left  = BinaryOp(left=left, op=op, right=right, line=optok.line, column=optok.column)
         return left
 
     def parse_and(self) -> Node:
         pos  = self._pos()
         left = self.parse_not()
         while self.at(TokenType.AND):
-            op    = self.advance().value
+            optok = self.advance()
+            op    = optok.value
             right = self.parse_not()
-            left  = BinaryOp(left=left, op=op, right=right, **pos)
+            # la position d\'un BinaryOp est celle de l\'opérateur (erreurs plus précises)
+            left  = BinaryOp(left=left, op=op, right=right, line=optok.line, column=optok.column)
         return left
 
     def parse_not(self) -> Node:
@@ -424,9 +445,11 @@ class Parser:
         cmp_ops = (TokenType.EQ, TokenType.NEQ, TokenType.LT,
                    TokenType.GT, TokenType.LTE, TokenType.GTE)
         while self.at(*cmp_ops):
-            op    = self.advance().value
+            optok = self.advance()
+            op    = optok.value
             right = self.parse_range()
-            left  = BinaryOp(left=left, op=op, right=right, **pos)
+            # la position d\'un BinaryOp est celle de l\'opérateur (erreurs plus précises)
+            left  = BinaryOp(left=left, op=op, right=right, line=optok.line, column=optok.column)
         return left
 
     def parse_range(self) -> Node:
@@ -441,18 +464,22 @@ class Parser:
         pos  = self._pos()
         left = self.parse_multiplicative()
         while self.at(TokenType.PLUS, TokenType.MINUS):
-            op    = self.advance().value
+            optok = self.advance()
+            op    = optok.value
             right = self.parse_multiplicative()
-            left  = BinaryOp(left=left, op=op, right=right, **pos)
+            # la position d\'un BinaryOp est celle de l\'opérateur (erreurs plus précises)
+            left  = BinaryOp(left=left, op=op, right=right, line=optok.line, column=optok.column)
         return left
 
     def parse_multiplicative(self) -> Node:
         pos  = self._pos()
         left = self.parse_unary()
         while self.at(TokenType.STAR, TokenType.SLASH, TokenType.PERCENT):
-            op    = self.advance().value
+            optok = self.advance()
+            op    = optok.value
             right = self.parse_unary()
-            left  = BinaryOp(left=left, op=op, right=right, **pos)
+            # la position d\'un BinaryOp est celle de l\'opérateur (erreurs plus précises)
+            left  = BinaryOp(left=left, op=op, right=right, line=optok.line, column=optok.column)
         return left
 
     def parse_unary(self) -> Node:
@@ -505,6 +532,8 @@ class Parser:
 
         if tok.type == TokenType.STRING:
             self.advance()
+            if tok.parts is not None:
+                return self._interpolated(tok, pos)
             return StringLiteral(value=tok.value, **pos)
 
         if tok.type == TokenType.BOOL:
@@ -617,6 +646,27 @@ class Parser:
         self.expect_end("if")
         return IfExpression(condition=cond, then_value=then_val, else_value=else_val, **pos)
 
+    def _interpolated(self, tok: Token, pos: dict) -> Node:
+        """Construit un InterpolatedString en parsant chaque `{expr}`."""
+        parts: list = []
+        for part in tok.parts:
+            if isinstance(part, str):
+                parts.append(part)
+                continue
+            src, line, col = part
+            lx = Lexer(src, self.filename)
+            lx.line, lx.column = line, col
+            sub = Parser(lx.tokenize(), source=self.source, filename=self.filename)
+            expr = sub.parse_expression()
+            if sub.current().type != TokenType.EOF:
+                extra = sub.current()
+                raise err_expected_token("}", extra.value or extra.type.name,
+                                         extra.line, extra.column,
+                                         source=self.source, filename=self.filename,
+                                         hint="une interpolation ne contient qu'une seule expression")
+            parts.append(expr)
+        return InterpolatedString(parts=parts, **pos)
+
     def parse_call_args(self) -> tuple:
         """Retourne (args, kwargs). Détecte name: val pour les kwargs."""
         self.expect(TokenType.LPAREN)
@@ -651,43 +701,6 @@ class Parser:
 # ── Fonction utilitaire ───────────────────────────────────────────────────────
 
 def parse_source(source: str, filename: str = "<source>") -> Program:
-    from lexer import Lexer
     tokens  = Lexer(source, filename).tokenize()
     parser  = Parser(tokens, source=source, filename=filename)
     return parser.parse()
-
-
-# ── Test rapide ───────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    import sys
-    from ast_nodes import pretty
-
-    sample = """
-import io
-
-blueprint Person
-    name: String
-    age:  Int = 0
-
-    fun greet()
-        print("Bonjour, " + name)
-    end
-
-    fun is_adult() -> Bool
-        return age >= 18
-    end
-end
-
-fun main()
-    alice = Person.new(name: "Alice", age: 25)
-    alice.greet()
-    if alice.is_adult()
-        print("Adulte")
-    end
-end
-
-main()
-"""
-    ast = parse_source(sample, "test.air")
-    print(pretty(ast))

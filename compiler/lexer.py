@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import List, Optional
 
+from .errors import LexerError, err_unexpected_char, err_unterminated_string
+
 
 class TokenType(Enum):
     # Littéraux
@@ -122,16 +124,12 @@ class Token:
     value:  str
     line:   int
     column: int
+    # Pour les chaînes interpolées : liste de str (texte) et de tuples
+    # (source_expr, ligne, colonne) pour les expressions `{...}`. None sinon.
+    parts:  Optional[list] = None
 
     def __repr__(self):
         return f"Token({self.type.name}, {self.value!r}, line={self.line}, col={self.column})"
-
-
-class LexerError(Exception):
-    def __init__(self, message: str, line: int, column: int):
-        super().__init__(f"[Erreur Lexer ligne {line}:{column}] {message}")
-        self.line   = line
-        self.column = column
 
 
 class Lexer:
@@ -143,8 +141,9 @@ class Lexer:
         self.column   = 1
         self.tokens: List[Token] = []
 
-    def error(self, msg: str) -> LexerError:
-        return LexerError(msg, self.line, self.column)
+    def error(self, msg: str, line: int = None, column: int = None, **kw) -> LexerError:
+        return LexerError(msg, line or self.line, column or self.column,
+                          filename=self.filename, source=self.source, **kw)
 
     def peek(self, offset: int = 0) -> Optional[str]:
         idx = self.pos + offset
@@ -170,20 +169,56 @@ class Lexer:
             self.advance()
 
     def read_string(self) -> Token:
+        """Lit une chaîne. `{expr}` déclenche l'interpolation ; `\\{` donne un `{` littéral."""
         start_line, start_col = self.line, self.column
         self.advance()  # consume opening "
-        buf = []
+        parts: list = []
+        buf: list = []
+        escapes = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\",
+                   "{": "{", "}": "}", "0": "\0"}
         while self.peek() is not None and self.peek() != '"':
+            if self.peek() == "\n":
+                break
             ch = self.advance()
             if ch == "\\":
+                if self.peek() is None:
+                    break
                 esc = self.advance()
-                buf.append({"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\"}.get(esc, "\\" + esc))
+                buf.append(escapes.get(esc, "\\" + esc))
+            elif ch == "{":
+                expr_line, expr_col = self.line, self.column
+                depth, expr = 1, []
+                while self.peek() is not None and self.peek() not in ('"', "\n"):
+                    c = self.advance()
+                    if c == "{":
+                        depth += 1
+                    elif c == "}":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    expr.append(c)
+                if depth != 0:
+                    raise self.error("interpolation `{...}` non fermée", start_line, start_col,
+                                     hint="fermez l'expression avec `}` (ou écrivez `\\{` pour une accolade littérale)")
+                src = "".join(expr)
+                if not src.strip():
+                    raise self.error("interpolation vide `{}`", expr_line, expr_col - 1,
+                                     hint="placez une expression entre les accolades, ex : \"{nom}\"")
+                if buf:
+                    parts.append("".join(buf))
+                    buf = []
+                parts.append((src, expr_line, expr_col))
             else:
                 buf.append(ch)
-        if self.peek() is None:
-            raise self.error("Chaîne non fermée (manque \")")
+        if self.peek() != '"':
+            raise err_unterminated_string(start_line, start_col,
+                                          filename=self.filename, source=self.source)
         self.advance()  # consume closing "
-        return Token(TokenType.STRING, "".join(buf), start_line, start_col)
+        if not parts:
+            return Token(TokenType.STRING, "".join(buf), start_line, start_col)
+        if buf:
+            parts.append("".join(buf))
+        return Token(TokenType.STRING, "", start_line, start_col, parts=parts)
 
     def read_number(self) -> Token:
         start_line, start_col = self.line, self.column
@@ -306,7 +341,8 @@ class Lexer:
             elif ch == "}":
                 self.tokens.append(Token(TokenType.RBRACE, "}", start_line, start_col))
             else:
-                raise self.error(f"Caractère inattendu : {ch!r}")
+                raise err_unexpected_char(ch, start_line, start_col,
+                                          filename=self.filename, source=self.source)
 
         self.tokens.append(Token(TokenType.EOF, "", self.line, self.column))
         return self.tokens
