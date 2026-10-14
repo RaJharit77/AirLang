@@ -18,7 +18,7 @@ from .lexer import Lexer
 from .parser import Parser
 from .type_checker import TypeChecker
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 RUNTIME_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "runtime"))
 

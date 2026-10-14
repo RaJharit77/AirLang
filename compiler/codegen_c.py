@@ -8,9 +8,10 @@ arguments ordonnés (`node.resolved`). Une construction pas encore supportée
 produit une CodegenError claire (ligne, colonne, version prévue) au lieu d'un
 C invalide.
 
-Représentation (v0.2) :
+Représentation (v0.3) :
+    List[T] → AirList* (éléments stockés par valeur)   Map[String, V] → AirMap*
     Int → int64_t     Float → double    Bool → bool    String → AirStr
-    blueprint Nom → bp_Nom*  (alloué par bp_Nom_new, jamais libéré en v0.2)
+    blueprint Nom → bp_Nom*  (alloué par bp_Nom_new, jamais libéré avant le comptage de références)
 Nommage C : variables v_x, champs f_x, fonctions air_fn_x, méthodes bp_B_m_x.
 """
 
@@ -49,6 +50,7 @@ class CCodegen:
         self._tmp = 0
         self._blueprints: dict = {}
         self._cur_ret: Optional[AirType] = None
+        self._cur_bp: Optional[str] = None
 
     # ── Utilitaires ─────────────────────────────────────────────────────────
 
@@ -79,11 +81,60 @@ class CCodegen:
             return simple[t.name]
         if t.name in self._blueprints:
             return f"bp_{t.name}*"
-        self.unsupported(node, f"le type `{t}`", "v0.3 (listes, maps) / v0.4 (Result, Fun)")
+        if t.name == "List" and t.params:
+            self.ctype(t.params[0], node, what)      # valide le type des éléments
+            return "AirList*"
+        if t.name == "Map" and len(t.params) == 2:
+            if t.params[0].name != "String":
+                self.unsupported(node, f"une map dont les clés sont de type `{t.params[0]}`"
+                                       " (seules les clés `String` existent)", "v0.5")
+            self.ctype(t.params[1], node, what)
+            return "AirMap*"
+        self.unsupported(node, f"le type `{t}`", "v0.4 (Result, Fun)")
+
+    @staticmethod
+    def kind(t: AirType) -> str:
+        """Genre d'élément du runtime (comparaison, tri, affichage)."""
+        return {"Int": "AIR_K_INT", "Float": "AIR_K_FLOAT", "Bool": "AIR_K_BOOL",
+                "String": "AIR_K_STRING"}.get(t.name, "AIR_K_OBJ")
 
     @staticmethod
     def v(name: str) -> str:
         return f"v_{name}"
+
+    # ── Ordre d'évaluation : toujours de gauche à droite ─────────────────────
+    # En C, l'ordre d'évaluation des arguments n'est pas défini. AirLang garantit
+    # gauche → droite : dès qu'une expression a plusieurs opérandes dont un peut avoir
+    # un effet de bord (appel, `.new`), on les évalue dans l'ordre dans des temporaires.
+
+    def _impure(self, node) -> bool:
+        if isinstance(node, (Call, MethodCall, NewInstance)):
+            return True
+        if isinstance(node, Node):
+            return any(self._impure(v) for v in vars(node).values())
+        if isinstance(node, (list, tuple)):
+            return any(self._impure(v) for v in node)
+        return False
+
+    def _hoist(self, operands):
+        """operands : [(nœud ou None, code, type C)]. Retourne (préfixe, codes)."""
+        if len(operands) < 2 or not any(n is not None and self._impure(n) for n, _, _ in operands):
+            return "", [c for _, c, _ in operands]
+        decls, names = [], []
+        for _, code, ct in operands:
+            t = self.fresh("_air_a")
+            decls.append(f"{ct} {t} = {code};")
+            names.append(t)
+        return " ".join(decls) + " ", names
+
+    @staticmethod
+    def _wrap(prefix: str, code: str) -> str:
+        return f"({{ {prefix}{code}; }})" if prefix else code
+
+    def _arg_operands(self, node):
+        """Les arguments résolus d'un appel, déjà convertis vers le type du paramètre."""
+        return [(a, self._coerce_code(self.expr(a), a.ty, pt), self.ctype(pt, a))
+                for a, pt in zip(node.resolved, node.param_types)]
 
     # ── Point d'entrée ────────────────────────────────────────────────────────
 
@@ -109,9 +160,10 @@ class CCodegen:
         self.emit()
 
         for bp in bps:
-            if bp.extends:
-                self.unsupported(bp, "l'héritage (`extends`)", "v0.3")
             self.emit(f"typedef struct bp_{bp.name} bp_{bp.name};")
+        for bp in bps:
+            self._check_overrides(bp)
+            self._vt_struct(bp)
         for bp in bps:
             self._struct(bp)
 
@@ -122,6 +174,9 @@ class CCodegen:
                 self.emit(self._method_sig(bp, m) + ";")
         for f in funs:
             self.emit(self._fun_sig(f) + ";")
+        self.emit()
+        for bp in bps:
+            self._vt_instance(bp)
         self.emit()
 
         # globales
@@ -149,28 +204,106 @@ class CCodegen:
         self.emit("}")
         return "\n".join(self.output) + "\n"
 
-    # ── Blueprints ────────────────────────────────────────────────────────────
+    # ── Blueprints (héritage par table virtuelle) ─────────────────────────────
+
+    def chain(self, name: str) -> List[str]:
+        """Racine → feuille : ex. ['Person', 'Employee']."""
+        out, cur = [], name
+        while cur and cur in self._blueprints and cur not in out:
+            out.append(cur)
+            cur = self._blueprints[cur].extends
+        return list(reversed(out))
+
+    def all_fields(self, name: str) -> list:
+        """Champs aplatis, parent d'abord (même ordre que le type checker)."""
+        seen = {}
+        for c in self.chain(name):
+            for f in self._blueprints[c].fields:
+                seen[f.name] = f
+        return list(seen.values())
+
+    def virtuals(self, name: str) -> dict:
+        """nom de méthode -> (classe qui l'introduit, FunDecl d'origine), dans l'ordre."""
+        seen = {}
+        for c in self.chain(name):
+            for m in self._blueprints[c].methods:
+                seen.setdefault(m.name, (c, m))
+        return seen
+
+    def impl_of(self, name: str, method: str):
+        """Classe la plus proche de `name` (feuille → racine) qui définit `method`."""
+        for c in reversed(self.chain(name)):
+            for m in self._blueprints[c].methods:
+                if m.name == method:
+                    return c, m
+        return None
+
+    def _check_overrides(self, bp: BlueprintDecl):
+        virt = self.virtuals(bp.name)
+        for m in bp.methods:
+            ic, im = virt[m.name]
+            if ic == bp.name:
+                continue
+            same = (len(m.params) == len(im.params)
+                    and self.ctype(m.ret_ty, m) == self.ctype(im.ret_ty, im)
+                    and all(self.ctype(a.ty, a) == self.ctype(b.ty, b)
+                            for a, b in zip(m.params, im.params)))
+            if not same:
+                raise CodegenError(
+                    f"la méthode `{m.name}` de `{bp.name}` n'a pas la même signature que celle de `{ic}`",
+                    m.line, m.column, filename=self.filename, source=self.source,
+                    hint="une méthode redéfinie doit garder les mêmes paramètres et le même type de retour",
+                    length=len(m.name))
+
+    def _vt_fn_type(self, ic: str, im: FunDecl) -> str:
+        return f"{self.ctype(im.ret_ty, im)} (*)({self._params(im.params, f'bp_{ic}* self')})"
+
+    def _vt_struct(self, bp: BlueprintDecl):
+        self.emit(f"typedef struct bp_{bp.name}_vt {{")
+        self.indent += 1
+        virt = self.virtuals(bp.name)
+        if not virt:
+            self.emit("char _air_unused;")
+        for name, (ic, im) in virt.items():
+            ret = self.ctype(im.ret_ty, im)
+            self.emit(f"{ret} (*m_{name})({self._params(im.params, f'bp_{ic}* self')});")
+        self.indent -= 1
+        self.emit(f"}} bp_{bp.name}_vt;")
+        self.emit()
+
+    def _vt_instance(self, bp: BlueprintDecl):
+        virt = self.virtuals(bp.name)
+        self.emit(f"static const bp_{bp.name}_vt bp_{bp.name}_vtable = {{")
+        self.indent += 1
+        if not virt:
+            self.emit("0")
+        for name, (ic, im) in virt.items():
+            impl, _ = self.impl_of(bp.name, name)
+            self.emit(f".m_{name} = ({self._vt_fn_type(ic, im)})bp_{impl}_m_{name},")
+        self.indent -= 1
+        self.emit("};")
 
     def _struct(self, bp: BlueprintDecl):
         self.emit(f"struct bp_{bp.name} {{")
         self.indent += 1
-        if not bp.fields:
-            self.emit("char _air_unused;")
-        for f in bp.fields:
+        self.emit(f"const bp_{bp.name}_vt* vt;")
+        for f in self.all_fields(bp.name):
             self.emit(f"{self.ctype(f.ty, f, f'le champ `{f.name}`')} f_{f.name};")
         self.indent -= 1
         self.emit("};")
         self.emit()
 
     def _ctor_sig(self, bp: BlueprintDecl) -> str:
-        params = ", ".join(f"{self.ctype(f.ty, f)} {self.v(f.name)}" for f in bp.fields) or "void"
+        params = ", ".join(f"{self.ctype(f.ty, f)} {self.v(f.name)}"
+                           for f in self.all_fields(bp.name)) or "void"
         return f"bp_{bp.name}* bp_{bp.name}_new({params})"
 
     def _ctor(self, bp: BlueprintDecl):
         self.emit(self._ctor_sig(bp) + " {")
         self.indent += 1
         self.emit(f"bp_{bp.name}* self = (bp_{bp.name}*)air_alloc(sizeof(bp_{bp.name}));")
-        for f in bp.fields:
+        self.emit(f"self->vt = &bp_{bp.name}_vtable;")
+        for f in self.all_fields(bp.name):
             self.emit(f"self->f_{f.name} = {self.v(f.name)};")
         self.emit("return self;")
         self.indent -= 1
@@ -193,10 +326,12 @@ class CCodegen:
         return f"{ret} bp_{bp.name}_m_{m.name}({self._params(m.params, f'bp_{bp.name}* self')})"
 
     def _method(self, bp: BlueprintDecl, m: FunDecl):
+        prev, self._cur_bp = self._cur_bp, bp.name
         self.emit(self._method_sig(bp, m) + " {")
         self._body(m)
         self.emit("}")
         self.emit()
+        self._cur_bp = prev
 
     # ── Fonctions ─────────────────────────────────────────────────────────────
 
@@ -272,6 +407,10 @@ class CCodegen:
                 self.emit(f"{code};")
             else:
                 self.emit(f"(void)({code});")
+        elif isinstance(node, Break):
+            self.emit("break;")
+        elif isinstance(node, Continue):
+            self.emit("continue;")
         elif isinstance(node, TryCatch):
             self.unsupported(node, "`try`/`catch`", "v0.4")
         elif isinstance(node, (FunDecl, BlueprintDecl)):
@@ -289,12 +428,17 @@ class CCodegen:
         if t.name == "Bool":   return "false"
         if t.name == "String": return 'AIR_STR_LIT("")'
         if t.name in self._blueprints: return "NULL"
+        if t.name == "List":
+            return f"air_list_new(sizeof({self.ctype(t.params[0], node)}))"
+        if t.name == "Map":
+            self.ctype(t, node)
+            return f"air_map_new(sizeof({self.ctype(t.params[1], node)}))"
         self.unsupported(node, f"la valeur par défaut du type `{t}`")
 
     def _assign(self, node: Assign):
         tgt = node.target
         if isinstance(tgt, IndexAccess):
-            self.unsupported(node, "l'affectation par indice", "v0.3")
+            return self._assign_index(node)
         target_code = self.expr(tgt) if not node.declares else self.v(tgt.name)
         t = node.target_type
         if node.op == "=":
@@ -309,10 +453,40 @@ class CCodegen:
         else:
             self.emit(f"{target_code} = {val};")
 
+    def _assign_index(self, node: Assign):
+        tgt = node.target
+        ot = tgt.obj.ty
+        is_list = ot.name == "List"
+        et = ot.params[0] if is_list else ot.params[1]
+        ct = self.ctype(ot, node) and self.ctype(et, node)
+        obj, idx = self.expr(tgt.obj), self.expr(tgt.index)
+        ptr, val = self.fresh("_air_p"), self.fresh("_air_v")
+        if is_list:
+            getptr = f"({ct}*)air_list_at({obj}, {idx})"
+        elif node.op == "=":
+            getptr = f"({ct}*)air_map_slot({obj}, {idx})"      # crée la clé si absente
+        else:
+            getptr = f"({ct}*)air_map_get_ptr({obj}, {idx})"   # erreur si la clé est absente
+        self.emit("{")
+        self.indent += 1
+        if node.op == "=":
+            self.emit(f"{ct} {val} = {self.coerce(node.value, et)};")
+            self.emit(f"{ct}* {ptr} = {getptr};")
+            self.emit(f"*{ptr} = {val};")
+        else:
+            vct = self.ctype(node.value.ty, node.value)
+            self.emit(f"{vct} {val} = {self.expr(node.value)};")
+            self.emit(f"{ct}* {ptr} = {getptr};")
+            op = node.op[:-1]
+            code = self._binary(op, f"(*{ptr})", et, val, node.value.ty, node)
+            self.emit(f"*{ptr} = {self._coerce_code(code, self._result_type(op, et, node.value.ty), et)};")
+        self.indent -= 1
+        self.emit("}")
+
     def _for(self, node: ForStmt):
         it = node.iterable
         if not isinstance(it, RangeLiteral):
-            self.unsupported(node, "le parcours d'une liste", "v0.3")
+            return self._for_collection(node)
         i, end = self.fresh("_air_i"), self.fresh("_air_end")
         self.emit("{")
         self.indent += 1
@@ -326,6 +500,35 @@ class CCodegen:
             self.stmt(s)
         self.indent -= 1
         self.emit("}")
+        self.indent -= 1
+        self.emit("}")
+
+    def _for_collection(self, node: ForStmt):
+        t = node.iterable.ty
+        lst, i = self.fresh("_air_l"), self.fresh("_air_i")
+        if t.name == "List":
+            src, free = self.expr(node.iterable), False
+        elif t.name == "Map":
+            self.ctype(t, node)
+            src, free = f"air_map_keys({self.expr(node.iterable)})", True   # on parcourt les clés
+        else:
+            self.unsupported(node, f"le parcours d'une valeur de type `{t}`")
+        et = node.var_type
+        ct = self.ctype(et, node, f"la variable `{node.var}`")
+        self.emit("{")
+        self.indent += 1
+        self.emit(f"AirList* {lst} = {src};")
+        self.emit(f"for (int64_t {i} = 0; {i} < air_list_length({lst}); {i}++) {{")
+        self.indent += 1
+        self.emit(f"{ct} {self.v(node.var)} = AIR_LIST_AT({ct}, {lst}, {i});")
+        if node.index_var:
+            self.emit(f"int64_t {self.v(node.index_var)} = {i};")
+        for s in node.body:
+            self.stmt(s)
+        self.indent -= 1
+        self.emit("}")
+        if free:
+            self.emit(f"air_list_free({lst});")
         self.indent -= 1
         self.emit("}")
 
@@ -360,10 +563,13 @@ class CCodegen:
     def coerce(self, node: Node, target: Optional[AirType]) -> str:
         return self._coerce_code(self.expr(node), node.ty, target)
 
-    @staticmethod
-    def _coerce_code(code: str, src: Optional[AirType], dst: Optional[AirType]) -> str:
-        if src is not None and dst is not None and src.name == "Int" and dst.name == "Float":
-            return f"((double)({code}))"
+    def _coerce_code(self, code: str, src: Optional[AirType], dst: Optional[AirType]) -> str:
+        if src is not None and dst is not None:
+            if src.name == "Int" and dst.name == "Float":
+                return f"((double)({code}))"
+            if (src.name != dst.name and src.name in self._blueprints
+                    and dst.name in self._blueprints):
+                return f"((bp_{dst.name}*)({code}))"      # enfant → parent
         return code
 
     def to_str(self, node: Node) -> str:
@@ -375,7 +581,13 @@ class CCodegen:
         if t.name == "Int":    return f"air_int_to_str({code})"
         if t.name == "Float":  return f"air_float_to_str({code})"
         if t.name == "Bool":   return f"air_bool_to_str({code})"
-        self.unsupported(node, f"l'affichage d'une valeur de type `{t}`", "v0.3")
+        if t.name == "List" and t.params:
+            self.ctype(t, node)
+            return f"air_list_to_str({code}, {self.kind(t.params[0])})"
+        if t.name == "Map" and len(t.params) == 2:
+            self.ctype(t, node)
+            return f"air_map_to_str({code}, {self.kind(t.params[1])})"
+        self.unsupported(node, f"l'affichage d'une valeur de type `{t}`", "v0.4")
 
     def expr(self, node: Node) -> str:
         if isinstance(node, IntLiteral):
@@ -394,17 +606,22 @@ class CCodegen:
         if isinstance(node, Identifier):
             return f"self->f_{node.name}" if getattr(node, "kind", None) == "field" else self.v(node.name)
         if isinstance(node, BinaryOp):
-            return self._binary(node.op, self.expr(node.left), node.left.ty,
-                                self.expr(node.right), node.right.ty, node)
+            lt, rt = node.left.ty, node.right.ty
+            if node.op in ("and", "or") or lt is None or rt is None or "Any" in (lt.name, rt.name):
+                return self._binary(node.op, self.expr(node.left), lt,
+                                    self.expr(node.right), rt, node)      # court-circuit : pas de hoisting
+            pre, (l, r) = self._hoist([(node.left, self.expr(node.left), self.ctype(lt, node.left)),
+                                       (node.right, self.expr(node.right), self.ctype(rt, node.right))])
+            return self._wrap(pre, self._binary(node.op, l, lt, r, rt, node))
         if isinstance(node, UnaryOp):
             c = self.expr(node.operand)
             return f"(!{c})" if node.op == "not" else f"(-{c})"
         if isinstance(node, MemberAccess):
             return f"({self.expr(node.obj)})->f_{node.member}"
         if isinstance(node, NewInstance):
-            args = [self._coerce_code(self.expr(v), v.ty, ft)
-                    for (_, v), ft in zip(node.resolved, node.field_types)]
-            return f"bp_{node.blueprint}_new({', '.join(args)})"
+            pre, args = self._hoist([(v, self._coerce_code(self.expr(v), v.ty, ft), self.ctype(ft, v))
+                                     for (_, v), ft in zip(node.resolved, node.field_types)])
+            return self._wrap(pre, f"bp_{node.blueprint}_new({', '.join(args)})")
         if isinstance(node, Call):
             return self._call(node)
         if isinstance(node, MethodCall):
@@ -414,11 +631,17 @@ class CCodegen:
             return (f"(({self.expr(node.condition)}) ? {self.coerce(node.then_value, t)}"
                     f" : {self.coerce(node.else_value, t)})")
         if isinstance(node, ListLiteral):
-            self.unsupported(node, "les listes", "v0.3")
+            return self._list_literal(node)
         if isinstance(node, MapLiteral):
-            self.unsupported(node, "les maps", "v0.3")
+            return self._map_literal(node)
         if isinstance(node, IndexAccess):
-            self.unsupported(node, "l'accès par indice", "v0.3")
+            ot = node.obj.ty
+            pre, (o, i) = self._hoist([(node.obj, self.expr(node.obj), self.ctype(ot, node)),
+                                       (node.index, self.expr(node.index),
+                                        "int64_t" if ot.name == "List" else "AirStr")])
+            if ot.name == "List":
+                return self._wrap(pre, f"AIR_LIST_AT({self.ctype(ot.params[0], node)}, {o}, {i})")
+            return self._wrap(pre, f"AIR_MAP_AT({self.ctype(ot.params[1], node)}, {o}, {i})")
         if isinstance(node, Lambda):
             self.unsupported(node, "les fonctions anonymes", "v0.4")
         if isinstance(node, ErrorPropagate):
@@ -427,17 +650,42 @@ class CCodegen:
             self.unsupported(node, "un intervalle en dehors d'un `for`", "v0.3")
         self.unsupported(node, f"l'expression `{type(node).__name__}`")
 
+    def _list_literal(self, node: ListLiteral) -> str:
+        et = node.ty.params[0]
+        ct = self.ctype(et, node, "les éléments de la liste")
+        if not node.elements:
+            return f"air_list_new(sizeof({ct}))"
+        pre, vals = self._hoist([(e, self.coerce(e, et), ct) for e in node.elements])
+        items = ", ".join(vals)
+        return self._wrap(pre, f"air_list_from(({ct}[]){{{items}}}, {len(node.elements)}, sizeof({ct}))")
+
+    def _map_literal(self, node: MapLiteral) -> str:
+        self.ctype(node.ty, node, "la map")
+        vt = node.ty.params[1]
+        ct = self.ctype(vt, node, "les valeurs de la map")
+        if not node.pairs:
+            return f"air_map_new(sizeof({ct}))"
+        ops = []
+        for k, v in node.pairs:                       # clé puis valeur, paire après paire
+            ops.append((k, self.expr(k), "AirStr"))
+            ops.append((v, self.coerce(v, vt), ct))
+        pre, codes = self._hoist(ops)
+        keys, vals = ", ".join(codes[0::2]), ", ".join(codes[1::2])
+        return self._wrap(pre, f"air_map_from((AirStr[]){{{keys}}}, ({ct}[]){{{vals}}}, "
+                               f"{len(node.pairs)}, sizeof({ct}))")
+
     def _interp(self, node: InterpolatedString) -> str:
-        pieces = []
+        ops = []
         for p in node.parts:
             if isinstance(p, str):
-                pieces.append(f"AIR_STR_LIT({c_string_literal(p)})")
+                ops.append((None, f"AIR_STR_LIT({c_string_literal(p)})", "AirStr"))
             else:
-                pieces.append(self.to_str(p))
+                ops.append((p, self.to_str(p), "AirStr"))
+        pre, pieces = self._hoist(ops)
         code = pieces[0]
         for nxt in pieces[1:]:
             code = f"air_concat({code}, {nxt})"
-        return code
+        return self._wrap(pre, code)
 
     # opérateurs ---------------------------------------------------------------
 
@@ -494,11 +742,11 @@ class CCodegen:
         if b == "print":
             if not node.args:
                 return 'air_print(AIR_STR_LIT(""))'
-            parts = [self.to_str(a) for a in node.args]
+            pre, parts = self._hoist([(a, self.to_str(a), "AirStr") for a in node.args])
             code = parts[0]
             for p in parts[1:]:
                 code = f"air_concat(air_concat({code}, AIR_STR_LIT(\" \")), {p})"
-            return f"air_print({code})"
+            return self._wrap(pre, f"air_print({code})")
         if b == "str":
             return self.to_str(node.args[0])
         if b in ("int", "float", "len"):
@@ -507,7 +755,9 @@ class CCodegen:
             if b == "len":
                 if t.name == "String":
                     return f"air_str_length({c})"
-                self.unsupported(node, f"`len` sur `{t}`", "v0.3")
+                if t.name == "List": return f"air_list_length({c})"
+                if t.name == "Map":  return f"air_map_length({c})"
+                self.unsupported(node, f"`len` sur `{t}`")
             if b == "int":
                 if t.name == "String": return f"air_str_to_int({c})"
                 if t.name in ("Int", "Float", "Bool"): return f"((int64_t)({c}))"
@@ -517,26 +767,77 @@ class CCodegen:
             self.unsupported(node, f"`{b}` sur `{t}`")
         if b in ("Ok", "Err"):
             self.unsupported(node, f"`{b}(...)` et le type `Result`", "v0.4")
+        pre, args = self._hoist(self._arg_operands(node))
         owner = getattr(node, "self_method", None)
         if owner:
-            return f"bp_{owner}_m_{name}({', '.join(['self'] + self._args(node))})"
-        return f"air_fn_{name}({', '.join(self._args(node))})"
+            ic = self.virtuals(self._cur_bp)[name][0]
+            return self._wrap(pre, f"((bp_{ic}*)self)->vt->m_{name}({', '.join([f'(bp_{ic}*)self'] + args)})")
+        return self._wrap(pre, f"air_fn_{name}({', '.join(args)})")
 
     _STR_METHODS = {
         "length": "air_str_length", "upper": "air_str_upper", "lower": "air_str_lower",
         "trim": "air_str_trim", "contains": "air_str_contains",
         "starts_with": "air_string_starts_with", "ends_with": "air_string_ends_with",
-        "replace": "air_str_replace",
+        "replace": "air_str_replace", "split": "air_str_split",
     }
 
     def _method_call(self, node: MethodCall) -> str:
         owner = getattr(node, "owner", None)
-        obj = self.expr(node.obj)
+        ops = [(node.obj, self.expr(node.obj), self.ctype(node.obj.ty, node.obj))] + self._arg_operands(node)
+        pre, codes = self._hoist(ops)
+        obj, args = codes[0], codes[1:]
         if owner == "String":
             fn = self._STR_METHODS.get(node.method)
             if fn is None:
-                self.unsupported(node, f"`String.{node.method}` (retourne une liste)", "v0.3")
-            return f"{fn}({', '.join([obj] + self._args(node))})"
+                self.unsupported(node, f"`String.{node.method}`")
+            return self._wrap(pre, f"{fn}({', '.join([obj] + args)})")
+        if owner == "List":
+            return self._wrap(pre, self._list_method(node, obj, args))
+        if owner == "Map":
+            return self._wrap(pre, self._map_method(node, obj, args))
         if owner and owner in self._blueprints:
-            return f"bp_{owner}_m_{node.method}({', '.join([obj] + self._args(node))})"
-        self.unsupported(node, f"la méthode `{node.method}` sur ce type", "v0.3")
+            st = node.obj.ty.name
+            ic = self.virtuals(st)[node.method][0]      # classe qui introduit la méthode
+            o = self.fresh("_air_o")
+            return self._wrap(pre, f"({{ bp_{ic}* {o} = (bp_{ic}*)({obj}); "
+                                   f"{o}->vt->m_{node.method}({', '.join([o] + args)}); }})")
+        self.unsupported(node, f"la méthode `{node.method}` sur ce type", "v0.4")
+
+    def _list_method(self, node: MethodCall, obj: str, a: List[str]) -> str:
+        et = node.obj.ty.params[0]
+        ct, k = self.ctype(et, node), self.kind(et)
+        m = node.method
+        table = {
+            "append":    lambda: f"AIR_LIST_PUSH({ct}, {obj}, {a[0]})",
+            "length":    lambda: f"air_list_length({obj})",
+            "pop":       lambda: f"AIR_LIST_POP({ct}, {obj})",
+            "first":     lambda: f"AIR_LIST_FIRST({ct}, {obj})",
+            "last":      lambda: f"AIR_LIST_LAST({ct}, {obj})",
+            "contains":  lambda: f"AIR_LIST_CONTAINS({ct}, {obj}, {a[0]}, {k})",
+            "index_of":  lambda: f"AIR_LIST_INDEX_OF({ct}, {obj}, {a[0]}, {k})",
+            "remove_at": lambda: f"AIR_LIST_REMOVE_AT({ct}, {obj}, {a[0]})",
+            "clear":     lambda: f"air_list_clear({obj})",
+            "reverse":   lambda: f"air_list_reversed({obj})",
+            "sort":      lambda: f"air_list_sorted({obj}, {k})",
+            "join":      lambda: f"air_list_join({obj}, {a[0]})",
+        }
+        if m not in table:
+            self.unsupported(node, f"`List.{m}`")
+        return table[m]()
+
+    def _map_method(self, node: MethodCall, obj: str, a: List[str]) -> str:
+        self.ctype(node.obj.ty, node)
+        ct = self.ctype(node.obj.ty.params[1], node)
+        m = node.method
+        table = {
+            "length": lambda: f"air_map_length({obj})",
+            "has":    lambda: f"air_map_has({obj}, {a[0]})",
+            "get_or": lambda: f"AIR_MAP_GET_OR({ct}, {obj}, {a[0]}, {a[1]})",
+            "keys":   lambda: f"air_map_keys({obj})",
+            "values": lambda: f"air_map_values({obj})",
+            "delete": lambda: f"air_map_delete({obj}, {a[0]})",
+            "clear":  lambda: f"air_map_clear({obj})",
+        }
+        if m not in table:
+            self.unsupported(node, f"`Map.{m}`")
+        return table[m]()

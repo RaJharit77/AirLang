@@ -1,0 +1,24 @@
+fun main()
+    nums = [3, 1, 2]
+    total = 0
+    for n in nums
+        if n == 1 then continue end
+        total = total + n
+    end
+    print(total)
+    nums.append(10)
+    print(nums, nums.length())
+    print(nums.sort())
+    words = ["b", "a"]
+    print(words.join("-"))
+    ages = {"alice": 30, "bob": 25}
+    ages["carl"] = 41
+    ages["bob"] += 1
+    for name in ages
+        print("{name} -> {ages[name]}")
+    end
+    print(ages.has("zed"), len(ages), nums[0])
+    nums[0] = 99
+    print(nums)
+end
+main()

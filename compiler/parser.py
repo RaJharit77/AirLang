@@ -15,6 +15,16 @@ class Parser:
     def __init__(self, tokens: List[Token], source: str = "", filename: str = "<source>"):
         # Filtre les NEWLINEs pour simplifier le parsing
         self.tokens   = [t for t in tokens if t.type != TokenType.NEWLINE]
+        # Profondeur de parenthèses/crochets/accolades AVANT chaque token : à l'intérieur,
+        # les retours à la ligne sont libres ; au niveau 0, une ligne ne continue pas la précédente.
+        self._depth = []
+        d = 0
+        for t in self.tokens:
+            self._depth.append(d)
+            if t.type in (TokenType.LPAREN, TokenType.LBRACKET, TokenType.LBRACE):
+                d += 1
+            elif t.type in (TokenType.RPAREN, TokenType.RBRACKET, TokenType.RBRACE):
+                d = max(0, d - 1)
         self.pos      = 0
         self.source   = source
         self.filename = filename
@@ -30,6 +40,17 @@ class Parser:
 
     def at(self, *types: TokenType) -> bool:
         return self.current().type in types
+
+    def cont_at(self, *types: TokenType) -> bool:
+        """Comme `at`, mais un opérateur placé au début d'une nouvelle ligne (hors parenthèses)
+        commence une nouvelle instruction au lieu de continuer l'expression précédente."""
+        tok = self.current()
+        if tok.type not in types:
+            return False
+        i = self.pos
+        if i > 0 and tok.line > self.tokens[i - 1].line and self._depth[i] == 0:
+            return False
+        return True
 
     def advance(self) -> Token:
         tok = self.tokens[self.pos]
@@ -77,6 +98,11 @@ class Parser:
     def parse_statement(self) -> Node:
         tok = self.current()
 
+        if tok.type == TokenType.AT:
+            raise ParseError(
+                "les décorateurs (`@native`, `@strict`) ne sont pas encore supportés",
+                tok.line, tok.column, filename=self.filename, source=self.source,
+                hint="prévu en v0.5 (modules et `@native`) ; voir la feuille de route (ROADMAP.md)")
         if tok.type == TokenType.IMPORT:
             return self.parse_import()
         if tok.type == TokenType.EXPORT:
@@ -103,6 +129,10 @@ class Parser:
             return self.parse_try_catch()
         if tok.type == TokenType.RETURN:
             return self.parse_return()
+        if tok.type == TokenType.BREAK:
+            return self.parse_break()
+        if tok.type == TokenType.CONTINUE:
+            return self.parse_continue()
 
         return self.parse_assign_or_expr()
 
@@ -269,6 +299,7 @@ class Parser:
         pos = self._pos()
         self.advance()  # if
         cond = self.parse_expression()
+        self.match(TokenType.THEN)      # `if cond then ... end` (une ligne) ou `if cond` (multi-ligne)
         then_body = self.parse_block((TokenType.ELSE, TokenType.END))
         elif_clauses, else_body = [], []
 
@@ -277,6 +308,7 @@ class Parser:
             if self.at(TokenType.IF):
                 self.advance()  # if
                 elif_cond = self.parse_expression()
+                self.match(TokenType.THEN)
                 elif_body = self.parse_block((TokenType.ELSE, TokenType.END))
                 elif_clauses.append((elif_cond, elif_body))
             else:
@@ -348,10 +380,22 @@ class Parser:
         pos = self._pos()
         self.advance()  # return
         value = None
-        if not self.at(TokenType.END, TokenType.ELSE, TokenType.EOF,
-                       TokenType.FUN, TokenType.BLUEPRINT):
+        # La valeur doit commencer sur la même ligne que `return` ; sinon c'est un `return` nu.
+        same_line = self.current().line == pos["line"]
+        if same_line and not self.at(TokenType.END, TokenType.ELSE, TokenType.EOF,
+                                     TokenType.FUN, TokenType.BLUEPRINT):
             value = self.parse_expression()
         return Return(value=value, **pos)
+
+    def parse_break(self) -> Break:
+        pos = self._pos()
+        self.advance()  # break
+        return Break(**pos)
+
+    def parse_continue(self) -> Continue:
+        pos = self._pos()
+        self.advance()  # continue
+        return Continue(**pos)
 
     # ── Assignation ou expression ──────────────────────────────────────────────
 
@@ -412,7 +456,7 @@ class Parser:
     def parse_or(self) -> Node:
         pos  = self._pos()
         left = self.parse_and()
-        while self.at(TokenType.OR):
+        while self.cont_at(TokenType.OR):
             optok = self.advance()
             op    = optok.value
             right = self.parse_and()
@@ -423,7 +467,7 @@ class Parser:
     def parse_and(self) -> Node:
         pos  = self._pos()
         left = self.parse_not()
-        while self.at(TokenType.AND):
+        while self.cont_at(TokenType.AND):
             optok = self.advance()
             op    = optok.value
             right = self.parse_not()
@@ -444,7 +488,7 @@ class Parser:
         left = self.parse_range()
         cmp_ops = (TokenType.EQ, TokenType.NEQ, TokenType.LT,
                    TokenType.GT, TokenType.LTE, TokenType.GTE)
-        while self.at(*cmp_ops):
+        while self.cont_at(*cmp_ops):
             optok = self.advance()
             op    = optok.value
             right = self.parse_range()
@@ -455,7 +499,8 @@ class Parser:
     def parse_range(self) -> Node:
         pos   = self._pos()
         start = self.parse_additive()
-        if self.match(TokenType.DOTDOT):
+        if self.cont_at(TokenType.DOTDOT):
+            self.advance()
             end = self.parse_additive()
             return RangeLiteral(start=start, end=end, **pos)
         return start
@@ -463,7 +508,7 @@ class Parser:
     def parse_additive(self) -> Node:
         pos  = self._pos()
         left = self.parse_multiplicative()
-        while self.at(TokenType.PLUS, TokenType.MINUS):
+        while self.cont_at(TokenType.PLUS, TokenType.MINUS):
             optok = self.advance()
             op    = optok.value
             right = self.parse_multiplicative()
@@ -474,7 +519,7 @@ class Parser:
     def parse_multiplicative(self) -> Node:
         pos  = self._pos()
         left = self.parse_unary()
-        while self.at(TokenType.STAR, TokenType.SLASH, TokenType.PERCENT):
+        while self.cont_at(TokenType.STAR, TokenType.SLASH, TokenType.PERCENT):
             optok = self.advance()
             op    = optok.value
             right = self.parse_unary()
@@ -504,12 +549,12 @@ class Parser:
                     expr = MethodCall(obj=expr, method=member, args=args, kwargs=kwargs, **pos)
                 else:
                     expr = MemberAccess(obj=expr, member=member, **pos)
-            elif self.at(TokenType.LBRACKET):
+            elif self.cont_at(TokenType.LBRACKET):
                 self.advance()
                 index = self.parse_expression()
                 self.expect(TokenType.RBRACKET)
                 expr = IndexAccess(obj=expr, index=index, **pos)
-            elif self.at(TokenType.QUESTION):
+            elif self.cont_at(TokenType.QUESTION):
                 self.advance()
                 expr = ErrorPropagate(expr=expr, **pos)
             else:
@@ -587,7 +632,7 @@ class Parser:
                 return NewInstance(blueprint=name, kwargs=kwargs, **pos)
 
             # Appel de fonction : name(args)
-            if self.at(TokenType.LPAREN):
+            if self.cont_at(TokenType.LPAREN):
                 args, kwargs = self.parse_call_args()
                 return Call(callee=Identifier(name=name, **pos), args=args, kwargs=kwargs, **pos)
 

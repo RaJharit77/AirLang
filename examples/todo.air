@@ -17,7 +17,7 @@ blueprint Task
 end
 
 blueprint TodoList
-    tasks: List[Task] = []
+    tasks:   List[Task] = []
     next_id: Int = 1
 
     fun add(title: String)

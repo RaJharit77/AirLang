@@ -35,7 +35,7 @@ bool air_io_delete(AirStr path) {
 
 AirList* air_io_lines(AirStr path) {
     AirResult r = air_file_read(path);
-    if (!r.is_ok) return air_list_empty();
+    if (!r.is_ok) return air_list_new(sizeof(AirStr));
     AirStr content = *(AirStr*)r.value;
     return air_str_split(content, air_str("\n"));
 }
@@ -128,43 +128,45 @@ double  air_string_to_float(AirStr s) { return strtod(s.data, NULL); }
  * MODULE : list  (wrappeurs autour des fonctions air_list_* du runtime)
  * ═══════════════════════════════════════════════════════════════════════════ */
 
+/* Les éléments sont stockés par valeur (elem_size octets). Ces fonctions ne dépendent donc
+ * pas du type : elles travaillent sur des octets. Le typage est fait par le compilateur. */
+
 int64_t air_list_length_stdlib(AirList* l) { return air_list_length(l); }
-AirVal  air_list_get_stdlib(AirList* l, int64_t i) { return air_list_get(l, i); }
-void    air_list_set_stdlib(AirList* l, int64_t i, AirVal v) { air_list_set(l, i, v); }
-void    air_list_append_stdlib(AirList* l, AirVal v) { air_list_append(l, v); }
 
-void air_list_prepend_stdlib(AirList* l, AirVal item) {
-    if (!l) return;
-    air_list_append(l, NULL);
-    memmove(&l->items[1], &l->items[0], (l->len - 1) * sizeof(AirVal));
-    l->items[0] = item;
+/* Pointeur vers l'élément i (vérifie les bornes). */
+void* air_list_get_stdlib(AirList* l, int64_t i) { return air_list_at(l, i); }
+
+void air_list_set_stdlib(AirList* l, int64_t i, const void* v) {
+    memcpy(air_list_at(l, i), v, l->elem_size);
 }
 
-AirVal air_list_pop_stdlib(AirList* l) {
-    if (!l || l->len == 0) { air_panic("list.pop : liste vide"); }
-    return l->items[--l->len];
+void air_list_append_stdlib(AirList* l, const void* v) { air_list_push(l, v); }
+
+void air_list_prepend_stdlib(AirList* l, const void* item) {
+    air_list_push(l, item);                       /* agrandit la liste */
+    size_t es = l->elem_size;
+    memmove(l->data + es, l->data, (l->len - 1) * es);
+    memcpy(l->data, item, es);
 }
 
-AirList* air_list_reverse_stdlib(AirList* l) {
-    AirList* result = air_list_empty();
-    if (!l) return result;
-    for (int64_t i = l->len - 1; i >= 0; i--) air_list_append(result, l->items[i]);
-    return result;
-}
+/* Retire le dernier élément et le copie dans *out (erreur d'exécution si la liste est vide). */
+void air_list_pop_stdlib(AirList* l, void* out) { air_list_pop_into(l, out); }
+
+AirList* air_list_reverse_stdlib(AirList* l) { return air_list_reversed(l); }
 
 AirList* air_list_slice_stdlib(AirList* l, int64_t start, int64_t end_idx) {
-    AirList* result = air_list_empty();
-    if (!l) return result;
+    AirList* result = air_list_new(l->elem_size);
     if (start < 0) start = 0;
     if (end_idx < 0 || (size_t)end_idx > l->len) end_idx = (int64_t)l->len;
-    for (int64_t i = start; i < end_idx; i++) air_list_append(result, l->items[i]);
+    for (int64_t i = start; i < end_idx; i++) air_list_push(result, l->data + (size_t)i * l->elem_size);
     return result;
 }
 
 AirList* air_list_concat_stdlib(AirList* a, AirList* b) {
-    AirList* result = air_list_empty();
-    if (a) for (size_t i = 0; i < a->len; i++) air_list_append(result, a->items[i]);
-    if (b) for (size_t i = 0; i < b->len; i++) air_list_append(result, b->items[i]);
+    if (a->elem_size != b->elem_size) air_runtime_error("list.concat : les deux listes n'ont pas le même type d'éléments");
+    AirList* result = air_list_new(a->elem_size);
+    for (size_t i = 0; i < a->len; i++) air_list_push(result, a->data + i * a->elem_size);
+    for (size_t i = 0; i < b->len; i++) air_list_push(result, b->data + i * b->elem_size);
     return result;
 }
 
@@ -229,11 +231,10 @@ static char** _air_argv = NULL;
 void air_os_init(int argc, char** argv) { _air_argc = argc; _air_argv = argv; }
 
 AirList* air_os_args(void) {
-    AirList* lst = air_list_empty();
+    AirList* lst = air_list_new(sizeof(AirStr));
     for (int i = 0; i < _air_argc; i++) {
-        AirStr* s = (AirStr*)air_alloc(sizeof(AirStr));
-        *s = air_str(_air_argv[i]);
-        air_list_append(lst, (AirVal)s);
+        AirStr s = air_str(_air_argv[i]);
+        air_list_push(lst, &s);
     }
     return lst;
 }

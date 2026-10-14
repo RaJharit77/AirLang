@@ -1,0 +1,23 @@
+fun main()
+    total = 0
+    i = 0
+    while true
+        i += 1
+        if i > 10 then break end
+        if i % 2 == 0 then continue end
+        total += i
+    end
+    print(total)
+    names = ["Ana", "Ben", "Chloé"]
+    for idx, name in names
+        print("{idx}: {name}")
+    end
+    matrix = [[1, 2], [3, 4]]
+    print(matrix[1][0], len(matrix))
+    empty: List[Int] = []
+    print(empty.length(), empty)
+    scores: Map[String, Float] = {"x": 1.5}
+    scores["y"] = 2
+    print(scores.get_or("y", 0.0), scores.get_or("q", -1.0))
+end
+main()

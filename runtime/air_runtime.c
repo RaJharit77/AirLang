@@ -141,185 +141,347 @@ AirStr air_str_replace(AirStr s, AirStr from, AirStr to) {
     return (AirStr){buf, new_len};
 }
 
+/* ── Erreurs d'exécution ─────────────────────────────────────────────────────── */
+
+void air_runtime_error(const char* fmt, ...) {
+    fflush(stdout);
+    fprintf(stderr, "\nErreur d'exécution : ");
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "\n");
+    exit(1);
+}
+
+/* ── Petit tampon de texte (utilisé par l'affichage des listes et des maps) ───── */
+
+typedef struct { char* data; size_t len, cap; } AirBuf;
+
+static void buf_add(AirBuf* b, const char* s, size_t n) {
+    if (b->len + n + 1 > b->cap) {
+        size_t nc = b->cap ? b->cap * 2 : 64;
+        while (nc < b->len + n + 1) nc *= 2;
+        b->data = (char*)air_realloc(b->data, nc);
+        b->cap = nc;
+    }
+    memcpy(b->data + b->len, s, n);
+    b->len += n;
+    b->data[b->len] = '\0';
+}
+static void buf_str(AirBuf* b, AirStr s) { buf_add(b, s.data ? s.data : "", s.len); }
+static void buf_cstr(AirBuf* b, const char* s) { buf_add(b, s, strlen(s)); }
+
+/* Texte d'un élément selon son genre (les chaînes sont entre guillemets). */
+static void buf_elem(AirBuf* b, int kind, const void* p) {
+    switch (kind) {
+        case AIR_K_INT:    buf_str(b, air_int_to_str(*(const int64_t*)p)); break;
+        case AIR_K_FLOAT:  buf_str(b, air_float_to_str(*(const double*)p)); break;
+        case AIR_K_BOOL:   buf_str(b, air_bool_to_str(*(const bool*)p)); break;
+        case AIR_K_STRING: buf_cstr(b, "\""); buf_str(b, *(const AirStr*)p); buf_cstr(b, "\""); break;
+        default:           buf_cstr(b, "<objet>"); break;
+    }
+}
+
+/* ── Strings : découpage ────────────────────────────────────────────────────── */
+
 AirList* air_str_split(AirStr s, AirStr delim) {
-    AirList* result = air_list_empty();
-    if (delim.len == 0) {
-        air_list_append(result, (AirVal)air_alloc(sizeof(AirStr)));
-        *(AirStr*)result->items[0] = air_str_copy(s);
+    AirList* result = air_list_new(sizeof(AirStr));
+    if (delim.len == 0 || s.len == 0) {
+        AirStr whole = air_str_copy(s);
+        air_list_push(result, &whole);
         return result;
     }
-    char* start = s.data;
-    char* end   = s.data + s.len;
-    char* p;
-    while ((p = memmem(start, end - start, delim.data, delim.len))) {
-        AirStr* part = (AirStr*)air_alloc(sizeof(AirStr));
-        *part = air_str_n(start, p - start);
-        air_list_append(result, (AirVal)part);
+    const char* start = s.data;
+    const char* end   = s.data + s.len;
+    const char* p;
+    while ((p = (const char*)memmem(start, (size_t)(end - start), delim.data, delim.len))) {
+        AirStr part = air_str_n(start, (size_t)(p - start));
+        air_list_push(result, &part);
         start = p + delim.len;
     }
-    AirStr* last = (AirStr*)air_alloc(sizeof(AirStr));
-    *last = air_str_n(start, end - start);
-    air_list_append(result, (AirVal)last);
+    AirStr last = air_str_n(start, (size_t)(end - start));
+    air_list_push(result, &last);
     return result;
 }
 
-/* ── Listes ─────────────────────────────────────────────────────────────────── */
+/* ── Listes (éléments stockés par valeur, tableau contigu) ──────────────────── */
 
-AirList* air_list_empty(void) {
+AirList* air_list_new(size_t elem_size) {
     AirList* l = (AirList*)air_alloc(sizeof(AirList));
-    l->cap  = 8;
-    l->len  = 0;
-    l->items = (AirVal*)air_alloc(sizeof(AirVal) * l->cap);
+    l->elem_size = elem_size;
     return l;
 }
 
-AirList* air_list_of(size_t n, ...) {
-    AirList* l = air_list_empty();
-    va_list ap;
-    va_start(ap, n);
-    for (size_t i = 0; i < n; i++) {
-        air_list_append(l, va_arg(ap, AirVal));
-    }
-    va_end(ap);
+static void list_reserve(AirList* l, size_t need) {
+    if (need <= l->cap) return;
+    size_t nc = l->cap ? l->cap * 2 : 8;
+    while (nc < need) nc *= 2;
+    l->data = (char*)air_realloc(l->data, nc * l->elem_size);
+    l->cap = nc;
+}
+
+AirList* air_list_from(const void* items, size_t n, size_t elem_size) {
+    AirList* l = air_list_new(elem_size);
+    list_reserve(l, n);
+    if (n) memcpy(l->data, items, n * elem_size);
+    l->len = n;
     return l;
 }
 
-void air_list_append(AirList* list, AirVal item) {
-    if (list->len >= list->cap) {
-        list->cap  *= 2;
-        list->items = (AirVal*)air_realloc(list->items, sizeof(AirVal) * list->cap);
+void air_list_push(AirList* l, const void* item) {
+    list_reserve(l, l->len + 1);
+    memcpy(l->data + l->len * l->elem_size, item, l->elem_size);
+    l->len++;
+}
+
+void* air_list_at(AirList* l, int64_t i) {
+    if (i < 0 || (uint64_t)i >= l->len)
+        air_runtime_error("indice %lld hors limites : la liste contient %zu élément(s)",
+                          (long long)i, l->len);
+    return l->data + (size_t)i * l->elem_size;
+}
+
+void* air_list_first_ptr(AirList* l) {
+    if (l->len == 0) air_runtime_error("first() sur une liste vide");
+    return l->data;
+}
+
+void* air_list_last_ptr(AirList* l) {
+    if (l->len == 0) air_runtime_error("last() sur une liste vide");
+    return l->data + (l->len - 1) * l->elem_size;
+}
+
+void air_list_pop_into(AirList* l, void* out) {
+    if (l->len == 0) air_runtime_error("pop() sur une liste vide");
+    l->len--;
+    memcpy(out, l->data + l->len * l->elem_size, l->elem_size);
+}
+
+void air_list_remove_at_into(AirList* l, int64_t i, void* out) {
+    if (i < 0 || (uint64_t)i >= l->len)
+        air_runtime_error("remove_at(%lld) hors limites : la liste contient %zu élément(s)",
+                          (long long)i, l->len);
+    char* at = l->data + (size_t)i * l->elem_size;
+    memcpy(out, at, l->elem_size);
+    memmove(at, at + l->elem_size, (l->len - (size_t)i - 1) * l->elem_size);
+    l->len--;
+}
+
+void air_list_clear(AirList* l) { l->len = 0; }
+
+int64_t air_list_length(AirList* l) { return (int64_t)l->len; }
+
+AirList* air_list_reversed(AirList* l) {
+    AirList* r = air_list_new(l->elem_size);
+    list_reserve(r, l->len);
+    for (size_t i = 0; i < l->len; i++)
+        memcpy(r->data + i * l->elem_size, l->data + (l->len - 1 - i) * l->elem_size, l->elem_size);
+    r->len = l->len;
+    return r;
+}
+
+static int cmp_int(const void* a, const void* b) {
+    int64_t x = *(const int64_t*)a, y = *(const int64_t*)b;
+    return (x > y) - (x < y);
+}
+static int cmp_float(const void* a, const void* b) {
+    double x = *(const double*)a, y = *(const double*)b;
+    return (x > y) - (x < y);
+}
+static int cmp_string(const void* a, const void* b) {
+    const AirStr* x = (const AirStr*)a; const AirStr* y = (const AirStr*)b;
+    size_t n = x->len < y->len ? x->len : y->len;
+    int c = n ? memcmp(x->data, y->data, n) : 0;
+    if (c) return c;
+    return (x->len > y->len) - (x->len < y->len);
+}
+
+AirList* air_list_sorted(AirList* l, int kind) {
+    AirList* r = air_list_from(l->data, l->len, l->elem_size);
+    int (*cmp)(const void*, const void*) = NULL;
+    switch (kind) {
+        case AIR_K_INT:    cmp = cmp_int; break;
+        case AIR_K_FLOAT:  cmp = cmp_float; break;
+        case AIR_K_STRING: cmp = cmp_string; break;
+        default: air_runtime_error("sort() n'est pas supporté pour ce type d'éléments");
     }
-    list->items[list->len++] = item;
+    if (r->len > 1) qsort(r->data, r->len, r->elem_size, cmp);
+    return r;
 }
 
-AirVal air_list_get(AirList* list, int64_t index) {
-    if (index < 0) index = (int64_t)list->len + index;
-    if (index < 0 || (size_t)index >= list->len) {
-        air_panic("Index hors limites (air_list_get)");
+static bool elem_eq(int kind, size_t size, const void* a, const void* b) {
+    switch (kind) {
+        case AIR_K_INT:    return *(const int64_t*)a == *(const int64_t*)b;
+        case AIR_K_FLOAT:  return *(const double*)a == *(const double*)b;
+        case AIR_K_BOOL:   return *(const bool*)a == *(const bool*)b;
+        case AIR_K_STRING: return air_str_eq(*(const AirStr*)a, *(const AirStr*)b);
+        default:           return memcmp(a, b, size) == 0;     /* identité (pointeurs) */
     }
-    return list->items[index];
 }
 
-void air_list_set(AirList* list, int64_t index, AirVal item) {
-    if (index < 0 || (size_t)index >= list->len) {
-        air_panic("Index hors limites (air_list_set)");
+int64_t air_list_index_of(AirList* l, const void* item, int kind) {
+    for (size_t i = 0; i < l->len; i++)
+        if (elem_eq(kind, l->elem_size, l->data + i * l->elem_size, item)) return (int64_t)i;
+    return -1;
+}
+
+AirStr air_list_join(AirList* l, AirStr sep) {
+    AirBuf b = {0};
+    for (size_t i = 0; i < l->len; i++) {
+        if (i) buf_str(&b, sep);
+        buf_str(&b, *(AirStr*)(l->data + i * l->elem_size));
     }
-    list->items[index] = item;
+    if (!b.data) return air_str("");
+    return (AirStr){b.data, b.len};
 }
 
-int64_t air_list_length(AirList* list) {
-    return list ? (int64_t)list->len : 0;
-}
-
-AirList* air_list_map(AirList* list, AirVal (*fn)(AirVal)) {
-    AirList* result = air_list_empty();
-    for (size_t i = 0; i < list->len; i++) {
-        air_list_append(result, fn(list->items[i]));
+AirStr air_list_to_str(AirList* l, int kind) {
+    AirBuf b = {0};
+    buf_cstr(&b, "[");
+    for (size_t i = 0; i < l->len; i++) {
+        if (i) buf_cstr(&b, ", ");
+        buf_elem(&b, kind, l->data + i * l->elem_size);
     }
-    return result;
+    buf_cstr(&b, "]");
+    return (AirStr){b.data, b.len};
 }
 
-AirList* air_list_filter(AirList* list, bool (*fn)(AirVal)) {
-    AirList* result = air_list_empty();
-    for (size_t i = 0; i < list->len; i++) {
-        if (fn(list->items[i])) {
-            air_list_append(result, list->items[i]);
-        }
-    }
-    return result;
+void air_list_free(AirList* l) {
+    if (!l) return;
+    air_free(l->data);
+    air_free(l);
 }
 
-AirVal air_list_reduce(AirList* list, AirVal init, AirVal (*fn)(AirVal, AirVal)) {
-    AirVal acc = init;
-    for (size_t i = 0; i < list->len; i++) {
-        acc = fn(acc, list->items[i]);
-    }
-    return acc;
+/* ── Maps (clés String, valeurs par valeur, ordre d'insertion conservé) ─────── */
+
+static size_t map_hash(AirStr key) {
+    size_t h = 1469598103934665603ULL;               /* FNV-1a */
+    for (size_t i = 0; i < key.len; i++) h = (h ^ (unsigned char)key.data[i]) * 1099511628211ULL;
+    return h;
 }
 
-AirStr air_list_join(AirList* list, AirStr sep) {
-    if (list->len == 0) return air_str("");
-    AirStr result = *(AirStr*)list->items[0];
-    for (size_t i = 1; i < list->len; i++) {
-        AirStr tmp = air_str_concat(result, sep);
-        result = air_str_concat(tmp, *(AirStr*)list->items[i]);
-    }
-    return result;
-}
-
-void air_list_free(AirList* list) {
-    if (!list) return;
-    air_free(list->items);
-    air_free(list);
-}
-
-/* ── Maps ───────────────────────────────────────────────────────────────────── */
-
-#define AIR_MAP_BUCKETS 64
-
-static size_t _air_hash(AirStr key) {
-    size_t h = 5381;
-    for (size_t i = 0; i < key.len; i++) {
-        h = ((h << 5) + h) + (unsigned char)key.data[i];
-    }
-    return h % AIR_MAP_BUCKETS;
-}
-
-AirMap* air_map_empty(void) {
+AirMap* air_map_new(size_t value_size) {
     AirMap* m = (AirMap*)air_alloc(sizeof(AirMap));
-    m->bucket_count = AIR_MAP_BUCKETS;
-    m->buckets = (AirMapEntry**)air_alloc(sizeof(AirMapEntry*) * AIR_MAP_BUCKETS);
-    m->len = 0;
+    m->value_size   = value_size;
+    m->bucket_count = 16;
+    m->buckets      = (AirMapEntry**)air_alloc(sizeof(AirMapEntry*) * m->bucket_count);
     return m;
 }
 
-void air_map_set(AirMap* m, AirStr key, AirVal value) {
-    size_t h = _air_hash(key);
-    AirMapEntry* e = m->buckets[h];
-    while (e) {
-        if (air_str_eq(e->key, key)) { e->value = value; return; }
-        e = e->next;
+static void map_rehash(AirMap* m) {
+    size_t nb = m->bucket_count * 2;
+    AirMapEntry** nbk = (AirMapEntry**)air_alloc(sizeof(AirMapEntry*) * nb);
+    for (size_t i = 0; i < m->len; i++) {
+        AirMapEntry* e = m->order[i];
+        size_t b = e->hash % nb;
+        e->next = nbk[b];
+        nbk[b] = e;
     }
-    AirMapEntry* ne = (AirMapEntry*)air_alloc(sizeof(AirMapEntry));
-    ne->key   = air_str_copy(key);
-    ne->value = value;
-    ne->next  = m->buckets[h];
-    m->buckets[h] = ne;
-    m->len++;
+    air_free(m->buckets);
+    m->buckets = nbk;
+    m->bucket_count = nb;
 }
 
-AirVal air_map_get(AirMap* m, AirStr key) {
-    size_t h = _air_hash(key);
-    AirMapEntry* e = m->buckets[h];
-    while (e) {
-        if (air_str_eq(e->key, key)) return e->value;
-        e = e->next;
-    }
+void* air_map_find(AirMap* m, AirStr key) {
+    size_t h = map_hash(key);
+    for (AirMapEntry* e = m->buckets[h % m->bucket_count]; e; e = e->next)
+        if (e->hash == h && air_str_eq(e->key, key)) return (void*)(e + 1);
     return NULL;
 }
 
-bool air_map_has(AirMap* m, AirStr key) {
-    return air_map_get(m, key) != NULL;
+void* air_map_get_ptr(AirMap* m, AirStr key) {
+    void* p = air_map_find(m, key);
+    if (!p) air_runtime_error("clé \"%.*s\" introuvable dans la map (utilisez has() ou get_or())",
+                              (int)key.len, key.data ? key.data : "");
+    return p;
 }
 
+void* air_map_slot(AirMap* m, AirStr key) {
+    void* p = air_map_find(m, key);
+    if (p) return p;
+    if (m->len + 1 > m->bucket_count * 2) map_rehash(m);
+    AirMapEntry* e = (AirMapEntry*)air_alloc(sizeof(AirMapEntry) + m->value_size);
+    e->key  = air_str_copy(key);
+    e->hash = map_hash(key);
+    size_t b = e->hash % m->bucket_count;
+    e->next = m->buckets[b];
+    m->buckets[b] = e;
+    if (m->len + 1 > m->order_cap) {
+        m->order_cap = m->order_cap ? m->order_cap * 2 : 8;
+        m->order = (AirMapEntry**)air_realloc(m->order, sizeof(AirMapEntry*) * m->order_cap);
+    }
+    m->order[m->len++] = e;
+    return (void*)(e + 1);
+}
+
+AirMap* air_map_from(const AirStr* keys, const void* values, size_t n, size_t value_size) {
+    AirMap* m = air_map_new(value_size);
+    for (size_t i = 0; i < n; i++)
+        memcpy(air_map_slot(m, keys[i]), (const char*)values + i * value_size, value_size);
+    return m;
+}
+
+bool air_map_has(AirMap* m, AirStr key) { return air_map_find(m, key) != NULL; }
+
 void air_map_delete(AirMap* m, AirStr key) {
-    size_t h = _air_hash(key);
-    AirMapEntry** p = &m->buckets[h];
+    size_t h = map_hash(key);
+    AirMapEntry** p = &m->buckets[h % m->bucket_count];
     while (*p) {
-        if (air_str_eq((*p)->key, key)) {
-            AirMapEntry* del = *p;
-            *p = del->next;
-            air_str_free(&del->key);
-            air_free(del);
+        AirMapEntry* e = *p;
+        if (e->hash == h && air_str_eq(e->key, key)) {
+            *p = e->next;
+            for (size_t i = 0; i < m->len; i++) {
+                if (m->order[i] == e) {
+                    memmove(&m->order[i], &m->order[i + 1], (m->len - i - 1) * sizeof(AirMapEntry*));
+                    break;
+                }
+            }
             m->len--;
+            air_str_free(&e->key);
+            air_free(e);
             return;
         }
-        p = &(*p)->next;
+        p = &e->next;
     }
 }
 
-int64_t air_map_length(AirMap* m) {
-    return (int64_t)m->len;
+void air_map_clear(AirMap* m) {
+    while (m->len) air_map_delete(m, m->order[m->len - 1]->key);
+}
+
+int64_t air_map_length(AirMap* m) { return (int64_t)m->len; }
+
+AirList* air_map_keys(AirMap* m) {
+    AirList* l = air_list_new(sizeof(AirStr));
+    for (size_t i = 0; i < m->len; i++) air_list_push(l, &m->order[i]->key);
+    return l;
+}
+
+AirList* air_map_values(AirMap* m) {
+    AirList* l = air_list_new(m->value_size);
+    for (size_t i = 0; i < m->len; i++) air_list_push(l, (void*)(m->order[i] + 1));
+    return l;
+}
+
+AirStr air_map_to_str(AirMap* m, int kind) {
+    AirBuf b = {0};
+    buf_cstr(&b, "{");
+    for (size_t i = 0; i < m->len; i++) {
+        if (i) buf_cstr(&b, ", ");
+        buf_cstr(&b, "\""); buf_str(&b, m->order[i]->key); buf_cstr(&b, "\": ");
+        buf_elem(&b, kind, (void*)(m->order[i] + 1));
+    }
+    buf_cstr(&b, "}");
+    return (AirStr){b.data, b.len};
+}
+
+void air_map_free(AirMap* m) {
+    if (!m) return;
+    for (size_t i = 0; i < m->len; i++) { air_str_free(&m->order[i]->key); air_free(m->order[i]); }
+    air_free(m->order);
+    air_free(m->buckets);
+    air_free(m);
 }
 
 /* ── Result ─────────────────────────────────────────────────────────────────── */

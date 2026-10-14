@@ -1,0 +1,7 @@
+fun main()
+    ages = {"alice": 30}
+    print(ages["alice"])
+    print(ages["zed"])
+    print("jamais atteint")
+end
+main()

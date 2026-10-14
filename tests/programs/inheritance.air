@@ -1,0 +1,41 @@
+blueprint Person
+    name: String
+    age:  Int = 18
+
+    fun greet()
+        print("Je m'appelle {name}")
+    end
+
+    fun intro()
+        greet()
+    end
+
+    fun is_adult() -> Bool
+        return age >= 18
+    end
+end
+
+blueprint Employee extends Person
+    company: String
+
+    fun greet()
+        print("Employé : {name} @ {company}")
+    end
+end
+
+fun welcome(p: Person)
+    p.greet()
+    p.intro()
+end
+
+fun main()
+    a = Person.new(name: "Alice")
+    b = Employee.new(name: "Bob", company: "AirCorp", age: 12)
+    welcome(a)
+    welcome(b)
+    people: List[Person] = [a, b]
+    for p in people
+        print(p.name, p.is_adult())
+    end
+end
+main()

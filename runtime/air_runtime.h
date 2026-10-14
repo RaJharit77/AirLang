@@ -34,25 +34,35 @@ typedef struct {
 
 /* ── Listes dynamiques ───────────────────────────────────────────────────────── */
 
+/* Les éléments sont stockés PAR VALEUR dans un tableau contigu (elem_size octets chacun) :
+ * List[Int] → int64_t, List[Float] → double, List[String] → AirStr, List[Blueprint] → pointeurs. */
 typedef struct AirList {
-    AirVal*  items;
+    char*    data;
     size_t   len;
     size_t   cap;
-    size_t   item_size;
+    size_t   elem_size;
 } AirList;
+
+/* Genre d'un élément : sert à comparer (contains, sort) et à afficher (print). */
+enum { AIR_K_INT = 0, AIR_K_FLOAT = 1, AIR_K_BOOL = 2, AIR_K_STRING = 3, AIR_K_OBJ = 4 };
 
 /* ── Maps (table de hachage simple) ────────────────────────────────────────── */
 
+/* Map[String, V] : clés String, valeurs par valeur (value_size octets), ordre d'insertion conservé.
+ * La valeur est stockée juste après l'entrée en mémoire. */
 typedef struct AirMapEntry {
-    AirStr           key;
-    AirVal           value;
+    AirStr              key;
+    size_t              hash;
     struct AirMapEntry* next;
 } AirMapEntry;
 
 typedef struct AirMap {
     AirMapEntry** buckets;
     size_t        bucket_count;
+    AirMapEntry** order;        /* entrées dans l'ordre d'insertion */
+    size_t        order_cap;
     size_t        len;
+    size_t        value_size;
 } AirMap;
 
 /* ── Erreurs ────────────────────────────────────────────────────────────────── */
@@ -101,32 +111,59 @@ static inline int64_t air_imod(int64_t a, int64_t b) {
     return a % b;
 }
 
+/* ── Erreurs d'exécution ────────────────────────────────────────────────────── */
+
+/* Affiche « Erreur d'exécution : ... » sur stderr puis quitte avec le code 1. */
+void air_runtime_error(const char* fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
+
 /* ── Listes ─────────────────────────────────────────────────────────────────── */
 
-AirList* air_list_empty(void);
-AirList* air_list_of(size_t n, ...);  /* air_list_of(3, val1, val2, val3) */
-void     air_list_append(AirList* list, AirVal item);
-AirVal   air_list_get(AirList* list, int64_t index);
-void     air_list_set(AirList* list, int64_t index, AirVal item);
-int64_t  air_list_length(AirList* list);
-AirList* air_list_map(AirList* list, AirVal (*fn)(AirVal));
-AirList* air_list_filter(AirList* list, bool (*fn)(AirVal));
-AirVal   air_list_reduce(AirList* list, AirVal init, AirVal (*fn)(AirVal, AirVal));
-AirList* air_list_sort(AirList* list, int (*cmp)(AirVal, AirVal));
-AirStr   air_list_join(AirList* list, AirStr sep);
-void     air_list_free(AirList* list);
+AirList* air_list_new(size_t elem_size);
+AirList* air_list_from(const void* items, size_t n, size_t elem_size);
+void     air_list_push(AirList* l, const void* item);
+void*    air_list_at(AirList* l, int64_t index);           /* vérifie les bornes */
+void*    air_list_first_ptr(AirList* l);
+void*    air_list_last_ptr(AirList* l);
+void     air_list_pop_into(AirList* l, void* out);
+void     air_list_remove_at_into(AirList* l, int64_t index, void* out);
+void     air_list_clear(AirList* l);
+int64_t  air_list_length(AirList* l);
+AirList* air_list_reversed(AirList* l);                    /* nouvelle liste */
+AirList* air_list_sorted(AirList* l, int kind);            /* nouvelle liste */
+int64_t  air_list_index_of(AirList* l, const void* item, int kind);   /* -1 si absent */
+AirStr   air_list_join(AirList* l, AirStr sep);            /* List[String] */
+AirStr   air_list_to_str(AirList* l, int kind);
+void     air_list_free(AirList* l);
+
+/* Accès typés (T = type C de l'élément). `AIR_LIST_AT` est une lvalue : l[i] = v fonctionne. */
+#define AIR_LIST_AT(T, l, i)        (*(T*)air_list_at((l), (i)))
+#define AIR_LIST_FIRST(T, l)        (*(T*)air_list_first_ptr(l))
+#define AIR_LIST_LAST(T, l)         (*(T*)air_list_last_ptr(l))
+#define AIR_LIST_PUSH(T, l, v)      do { T _air_pv = (v); air_list_push((l), &_air_pv); } while (0)
+#define AIR_LIST_POP(T, l)          ({ T _air_o; air_list_pop_into((l), &_air_o); _air_o; })
+#define AIR_LIST_REMOVE_AT(T, l, i) ({ T _air_o; air_list_remove_at_into((l), (i), &_air_o); _air_o; })
+#define AIR_LIST_INDEX_OF(T, l, v, k) ({ T _air_cv = (v); air_list_index_of((l), &_air_cv, (k)); })
+#define AIR_LIST_CONTAINS(T, l, v, k) (AIR_LIST_INDEX_OF(T, l, v, k) >= 0)
 
 /* ── Maps ───────────────────────────────────────────────────────────────────── */
 
-AirMap*  air_map_empty(void);
-void     air_map_set(AirMap* map, AirStr key, AirVal value);
-AirVal   air_map_get(AirMap* map, AirStr key);
-bool     air_map_has(AirMap* map, AirStr key);
-void     air_map_delete(AirMap* map, AirStr key);
-int64_t  air_map_length(AirMap* map);
-AirList* air_map_keys(AirMap* map);
-AirList* air_map_values(AirMap* map);
-void     air_map_free(AirMap* map);
+AirMap*  air_map_new(size_t value_size);
+AirMap*  air_map_from(const AirStr* keys, const void* values, size_t n, size_t value_size);
+void*    air_map_find(AirMap* m, AirStr key);              /* NULL si absente */
+void*    air_map_get_ptr(AirMap* m, AirStr key);           /* erreur d'exécution si absente */
+void*    air_map_slot(AirMap* m, AirStr key);              /* crée l'entrée (à zéro) si absente */
+bool     air_map_has(AirMap* m, AirStr key);
+void     air_map_delete(AirMap* m, AirStr key);
+void     air_map_clear(AirMap* m);
+int64_t  air_map_length(AirMap* m);
+AirList* air_map_keys(AirMap* m);                          /* List[String] */
+AirList* air_map_values(AirMap* m);
+AirStr   air_map_to_str(AirMap* m, int value_kind);
+void     air_map_free(AirMap* m);
+
+#define AIR_MAP_AT(T, m, k)          (*(T*)air_map_get_ptr((m), (k)))
+#define AIR_MAP_SLOT(T, m, k)        (*(T*)air_map_slot((m), (k)))
+#define AIR_MAP_GET_OR(T, m, k, d)   ({ T* _air_mp = (T*)air_map_find((m), (k)); _air_mp ? *_air_mp : (d); })
 
 /* ── Result ──────────────────────────────────────────────────────────────────── */
 
