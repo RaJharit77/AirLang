@@ -1,0 +1,43 @@
+# Exemple v0.3 : listes, maps, boucles, blueprints et héritage.
+
+blueprint Person
+    name: String
+
+    fun describe()
+        print("{name}")
+    end
+end
+
+blueprint Student extends Person
+    grades: List[Int]
+
+    fun average() -> Float
+        total = 0
+        for g in grades
+            total += g
+        end
+        return float(total) / len(grades)
+    end
+
+    fun describe()
+        print("{name} : moyenne {average()}")
+    end
+end
+
+fun main()
+    class_list: List[Person] = []
+    class_list.append(Student.new(name: "Ana", grades: [12, 15, 18]))
+    class_list.append(Student.new(name: "Ben", grades: [9, 10]))
+    class_list.append(Person.new(name: "M. Dupont (professeur)"))
+
+    for p in class_list
+        p.describe()
+    end
+
+    seen = {"Ana": 0, "Ben": 0}
+    for name in seen
+        seen[name] += 1
+    end
+    print(seen)
+end
+main()

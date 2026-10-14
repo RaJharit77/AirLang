@@ -216,6 +216,39 @@ STRING_METHODS = {
 }
 
 
+def list_methods(elem: AirType) -> dict:
+    """Méthodes intégrées de List[elem] : nom -> (types des paramètres, type de retour)."""
+    lst = AirType("List", [elem])
+    m = {
+        "append":   ([elem], T_VOID),     # ajoute à la fin (modifie la liste)
+        "length":   ([], T_INT),
+        "pop":      ([], elem),           # retire et retourne le dernier
+        "first":    ([], elem),
+        "last":     ([], elem),
+        "contains": ([elem], T_BOOL),
+        "index_of": ([elem], T_INT),      # -1 si absent
+        "remove_at": ([T_INT], elem),     # retire et retourne l'élément à l'indice
+        "clear":    ([], T_VOID),
+        "reverse":  ([], lst),            # retourne une NOUVELLE liste (l'originale ne change pas)
+        "sort":     ([], lst),            # idem : nouvelle liste triée
+    }
+    if elem.name == "String":
+        m["join"] = ([T_STRING], T_STRING)
+    return m
+
+
+def map_methods(key: AirType, val: AirType) -> dict:
+    return {
+        "length": ([], T_INT),
+        "has":    ([key], T_BOOL),
+        "get_or": ([key, val], val),      # valeur, ou le défaut si la clé est absente
+        "keys":   ([], AirType("List", [key])),
+        "values": ([], AirType("List", [val])),
+        "delete": ([key], T_VOID),
+        "clear":  ([], T_VOID),
+    }
+
+
 # ── Type Checker ──────────────────────────────────────────────────────────────
 
 class TypeChecker:
@@ -232,6 +265,7 @@ class TypeChecker:
         self._fun_ctx: Optional[dict] = None     # contexte de la fonction courante
         self._current_bp: Optional[BlueprintInfo] = None
         self._infos: Dict[int, FunInfo] = {}     # id(FunDecl) -> FunInfo
+        self._loop_depth = 0                     # nombre de boucles englobantes (break/continue)
 
     # ── Utilitaires ─────────────────────────────────────────────────────────
 
@@ -269,6 +303,19 @@ class TypeChecker:
                 **self._kw(ann, len(ann.name))))
             return T_ANY
         params = [self._resolve_type(p) for p in ann.params]
+        if ann.name == "List" and len(params) != 1:
+            self._type_err(ann, "`List` attend un type d'élément", hint="écrivez par exemple `List[Int]`",
+                           length=4)
+            return T_ANY
+        if ann.name == "Map":
+            if len(params) != 2:
+                self._type_err(ann, "`Map` attend un type de clé et un type de valeur",
+                               hint="écrivez par exemple `Map[String, Int]`", length=3)
+                return T_ANY
+            if params[0].name not in ("String", "Any"):
+                self._type_err(ann, f"les clés d'une `Map` doivent être des `String`, pas `{params[0]}`",
+                               hint="seules les clés `String` sont supportées pour l'instant", length=3)
+                return T_ANY
         return AirType(ann.name, params, ann.optional)
 
     def _all_blueprint_names(self) -> List[str]:
@@ -304,9 +351,44 @@ class TypeChecker:
             return False
         if len(src.params) != len(dst.params):
             return len(src.params) == 0 or len(dst.params) == 0
-        return all(self.assignable(a, b) for a, b in zip(src.params, dst.params))
+        # Les types paramétrés sont invariants : `List[Int]` n'est PAS une `List[Float]`
+        # (les éléments ont une représentation mémoire différente).
+        return all(self._same_type(a, b) for a, b in zip(src.params, dst.params))
+
+    def _same_type(self, a: AirType, b: AirType) -> bool:
+        if a.name == "Any" or b.name == "Any":
+            return True
+        return (a.name == b.name and a.optional == b.optional and len(a.params) == len(b.params)
+                and all(self._same_type(x, y) for x, y in zip(a.params, b.params)))
+
+    def _retype_literal(self, node: Node, expected: AirType) -> bool:
+        """`x: List[Float] = [1, 2]` et `tasks: List[Task] = []` : un littéral de liste/map prend
+        le type attendu, et chaque élément est vérifié (et converti) vers le type d'élément."""
+        if expected.name == "List" and isinstance(node, ListLiteral) and expected.params \
+                and expected.params[0].name != "Any":
+            et = expected.params[0]
+            for e in node.elements:
+                if e.ty is None:
+                    self.infer(e)
+                self._expect(e, e.ty, et)
+            node.ty = expected.non_optional()
+            return True
+        if expected.name == "Map" and isinstance(node, MapLiteral) and len(expected.params) == 2 \
+                and expected.params[1].name != "Any":
+            kt, vt = expected.params
+            for k, v in node.pairs:
+                for n in (k, v):
+                    if n.ty is None:
+                        self.infer(n)
+                self._expect(k, k.ty, kt)
+                self._expect(v, v.ty, vt)
+            node.ty = expected.non_optional()
+            return True
+        return False
 
     def _expect(self, node: Node, got: AirType, expected: AirType, hint: str = None):
+        if self._retype_literal(node, expected):
+            return
         if not self.assignable(got, expected):
             kw = self._kw(node)
             self.err(err_type_mismatch(str(expected), str(got), hint=hint, **kw))
@@ -472,7 +554,15 @@ class TypeChecker:
             self.check_block(node.body, "unless")
         elif isinstance(node, WhileStmt):
             self._expect_bool(node.condition, "la condition de `while`")
+            self._loop_depth += 1
             self.check_block(node.body, "while")
+            self._loop_depth -= 1
+        elif isinstance(node, (Break, Continue)):
+            if self._loop_depth == 0:
+                word = "break" if isinstance(node, Break) else "continue"
+                self._type_err(node, f"`{word}` en dehors d'une boucle",
+                               hint=f"`{word}` n'est valide que dans un `while` ou un `for`",
+                               length=len(word))
         elif isinstance(node, ForStmt):
             self._check_for(node)
         elif isinstance(node, MatchStmt):
@@ -496,6 +586,9 @@ class TypeChecker:
         if ann is not None and val is not None:
             self._expect(node.value, val, ann)
         declared = ann or val or T_ANY
+        if ann is None and self._untyped_collection(declared):
+            self._type_err(node, f"impossible de déduire le type des éléments de `{node.name}`",
+                           hint=f"annotez-le, ex : `{node.name}: List[Int] = []`", length=len(node.name))
         if declared.name == "Null" and ann is None:
             self._type_err(node, f"impossible de déduire le type de `{node.name}` à partir de `null`",
                            hint=f"annotez le type, ex : `{node.name}: String? = null`",
@@ -508,6 +601,10 @@ class TypeChecker:
         self.scope.define_var(node.name, declared, const=node.is_const)
         node.var_type = declared
         node.kind = self.scope.syms[node.name].kind
+
+    @staticmethod
+    def _untyped_collection(t: AirType) -> bool:
+        return t.name in ("List", "Map") and (not t.params or any(p.name == "Any" for p in t.params))
 
     def _check_assign(self, node: Assign):
         val = self.infer(node.value)
@@ -531,6 +628,9 @@ class TypeChecker:
                     self._type_err(t, f"impossible de déduire le type de `{t.name}` à partir de `null`",
                                    hint=f"annotez le type, ex : `{t.name}: String? = null`")
                     val = T_ANY
+                if self._untyped_collection(val):
+                    self._type_err(t, f"impossible de déduire le type des éléments de `{t.name}`",
+                                   hint=f"annotez-le, ex : `{t.name}: List[Int] = []`", length=len(t.name))
                 self.scope.define_var(t.name, val)
                 node.declares = True
                 t.ty = val
@@ -548,7 +648,9 @@ class TypeChecker:
             node.target_type = target_t
             self._check_compound(node, target_t, val)
         elif isinstance(t, IndexAccess):
-            node.target_type = self.infer(t)
+            target_t = self.infer(t)
+            node.target_type = target_t
+            self._check_compound(node, target_t, val)
         else:
             self._type_err(node.target, "cible d'affectation invalide")
 
@@ -573,7 +675,8 @@ class TypeChecker:
             return
         info.in_progress = True
 
-        saved = (self.scope, self._fun_ctx, self._current_bp)
+        saved = (self.scope, self._fun_ctx, self._current_bp, self._loop_depth)
+        self._loop_depth = 0
         bp = None
         if info.owner:
             b = self.global_scope.resolve_blueprint(info.owner)
@@ -603,7 +706,7 @@ class TypeChecker:
         node.ret_ty = ret
         node.info = info
 
-        self.scope, self._fun_ctx, self._current_bp = saved
+        self.scope, self._fun_ctx, self._current_bp, self._loop_depth = saved
         info.in_progress = False
         info.checked = True
 
@@ -703,11 +806,13 @@ class TypeChecker:
             t = self.infer(it)
             if t.name == "List" and t.params:
                 elem = t.params[0]
+            elif t.name == "Map" and len(t.params) == 2:
+                elem = t.params[0]          # parcourir une map donne ses clés
             elif t.name == "Any":
                 elem = T_ANY
             else:
                 self._type_err(it, f"on ne peut pas parcourir une valeur de type `{t}`",
-                               hint="parcourez une liste ou un intervalle, ex : `for i in 0..10`")
+                               hint="parcourez une liste, une map ou un intervalle, ex : `for i in 0..10`")
                 elem = T_ANY
         outer = self.scope
         self.scope = outer.child("for")
@@ -715,8 +820,10 @@ class TypeChecker:
         node.var_type = elem
         if node.index_var:
             self.scope.define_var(node.index_var, T_INT, kind="local")
+        self._loop_depth += 1
         for s in node.body:
             self.check_stmt(s)
+        self._loop_depth -= 1
         self.scope = outer
 
     def _check_match(self, node: MatchStmt):
@@ -800,11 +907,18 @@ class TypeChecker:
 
         if isinstance(node, IndexAccess):
             obj_t = self.infer(node.obj)
-            self.infer(node.index)
+            it = self.infer(node.index)
             if obj_t.name == "List" and obj_t.params:
+                if it.name not in ("Int", "Any"):
+                    self._type_err(node.index, f"l'indice d'une liste doit être un `Int`, pas `{it}`")
                 return obj_t.params[0]
             if obj_t.name == "Map" and len(obj_t.params) >= 2:
+                if it.name not in ("String", "Any"):
+                    self._type_err(node.index, f"la clé d'une map doit être une `String`, pas `{it}`")
                 return obj_t.params[1]
+            if obj_t.name != "Any":
+                self._type_err(node, f"une valeur de type `{obj_t}` ne peut pas être indexée avec `[...]`",
+                               hint="seules les listes et les maps peuvent être indexées")
             return T_ANY
 
         if isinstance(node, Lambda):
@@ -1020,6 +1134,8 @@ class TypeChecker:
         if name in ("len", "str", "int", "float"):
             if len(node.args) != 1:
                 self.err(err_wrong_arg_count(name, 1, len(node.args), **self._kw(node)))
+            elif name == "len" and node.args[0].ty.name not in ("String", "List", "Map", "Any"):
+                self._type_err(node.args[0], f"`len` attend une String, une List ou une Map, pas `{node.args[0].ty}`")
             return {"len": T_INT, "str": T_STRING, "int": T_INT, "float": T_FLOAT}[name]
         return AirType("Result", [T_ANY])      # Ok / Err
 
@@ -1046,14 +1162,27 @@ class TypeChecker:
             node.resolved = self._bind_args(node.method, info, node, node.args, node.kwargs)
             return ret
 
-        if obj_t.name == "List":
-            node.owner = "List"
-            elem = obj_t.params[0] if obj_t.params else T_ANY
-            return {
-                "map": AirType("List", [T_ANY]), "filter": obj_t, "reduce": T_ANY,
-                "append": T_VOID, "length": T_INT, "sort": obj_t, "unique": obj_t,
-                "join": T_STRING, "first": elem, "last": elem, "pop": elem,
-            }.get(node.method, T_ANY)
+        if obj_t.name in ("List", "Map") and obj_t.params:
+            table = (list_methods(obj_t.params[0]) if obj_t.name == "List"
+                     else map_methods(obj_t.params[0], obj_t.params[1]))
+            sig = table.get(node.method)
+            if sig is None:
+                near = did_you_mean(node.method, list(table))
+                extra = (" ; `join` n'existe que pour `List[String]`"
+                         if node.method == "join" and obj_t.name == "List" else "")
+                self._type_err(node, f"`{obj_t}` n'a pas de méthode `{node.method}`",
+                               hint=("vouliez-vous dire " + " ou ".join(f"`{n}`" for n in near) + " ?"
+                                     if near else "méthodes : " + ", ".join(table)) + extra,
+                               length=len(node.method))
+                return T_ANY
+            params, ret = sig
+            node.owner = obj_t.name
+            if node.method == "sort" and obj_t.params[0].name not in ("Int", "Float", "String"):
+                self._type_err(node, f"on ne peut trier que des `Int`, `Float` ou `String`, pas `{obj_t.params[0]}`",
+                               length=4)
+            info = FunInfo([(f"arg{i}", t) for i, t in enumerate(params)], ret)
+            node.resolved = self._bind_args(node.method, info, node, node.args, node.kwargs)
+            return ret
 
         info = self.global_scope.resolve_blueprint(obj_t.name)
         if isinstance(info, BlueprintInfo):

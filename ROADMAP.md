@@ -1,5 +1,19 @@
 # AirLang — Audit de l'existant et roadmap vers 1.0.0
 
+## Statut (v0.3.0)
+
+| Étape | État |
+|---|---|
+| v0.2 — pipeline réel, erreurs unifiées, CLI, codegen typé | **fait** |
+| v0.3 — listes/maps typées, blueprints + héritage, `break`/`continue`, ordre d'évaluation | **fait** |
+| v0.4 — lambdas, `Result`/`?`, `match` à motifs, `try/catch`, traits | à faire |
+| v0.5 — modules, `@native`, stdlib utilisable, comptage de références | à faire |
+| v0.6+ — REPL, `air test`, coloration VS Code, fuzzing, gel de la syntaxe | à faire |
+| 1.0.0 | à faire |
+
+*Le reste de ce document est l'audit initial (v0.1) ; les problèmes P0 et la plupart des P1 sont résolus.*
+
+---
 Audit réalisé sur le dépôt `RaJharit77/AirLang` (branche `main`, commit `c11f3bc`), avec exécution réelle des tests et du pipeline. Python 3.13, gcc 13.3.
 
 ## 1. Résumé

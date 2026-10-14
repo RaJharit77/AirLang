@@ -79,7 +79,7 @@ fun main()
     match status
         "grand" => print("G")
         "petit" => print("P")
-        _       => print("?")
+        _ => print("?")
     end
     ok = total == 3 and not (f < 1.0)
     print(ok, -total, 7 % 4, 2 + 3 * 4)

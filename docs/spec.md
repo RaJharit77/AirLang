@@ -610,3 +610,16 @@ unless    while     _
 
 *AirLang v0.1 — Document de spécification*
 *Créé le 2026-06-07*
+
+
+---
+
+## Annexe — Notes d'implémentation (v0.3)
+
+- **Ordre d'évaluation** : toujours de gauche à droite (arguments, opérandes, éléments de liste).
+- **`Int / Int`** : division entière. Pour une division décimale : `float(a) / b`.
+- **Clés de map** : `String` uniquement. Une clé absente (`m["k"]`) est une erreur d'exécution ; utilisez `has` ou `get_or`.
+- **Trait** : une signature de méthode (`fun nom(...)`) n'a ni corps ni `end`.
+- **`then`** : optionnel après `if` / `else if` ; indispensable pour écrire `if c then … end` sur une ligne.
+- **Chaînes** : `"texte" + entier` est interdit (pas de coercition) ; interpolez avec `"{x}"`.
+- **Mémoire** : pas encore libérée automatiquement.

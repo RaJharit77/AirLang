@@ -29,6 +29,8 @@ class TokenType(Enum):
     IMPORT     = auto()
     EXPORT     = auto()
     RETURN     = auto()
+    BREAK      = auto()
+    CONTINUE   = auto()
     IF         = auto()
     ELSE       = auto()
     UNLESS     = auto()
@@ -40,6 +42,7 @@ class TokenType(Enum):
     CONST      = auto()
     NEW        = auto()
     THEN       = auto()
+    AT         = auto()
     TRY        = auto()
     CATCH      = auto()
     AND        = auto()
@@ -95,6 +98,8 @@ KEYWORDS = {
     "import":     TokenType.IMPORT,
     "export":     TokenType.EXPORT,
     "return":     TokenType.RETURN,
+    "break":      TokenType.BREAK,
+    "continue":   TokenType.CONTINUE,
     "if":         TokenType.IF,
     "else":       TokenType.ELSE,
     "unless":     TokenType.UNLESS,
@@ -322,6 +327,8 @@ class Lexer:
                 self.tokens.append(Token(TokenType.DOT, ".", start_line, start_col))
             elif ch == "%":
                 self.tokens.append(Token(TokenType.PERCENT, "%", start_line, start_col))
+            elif ch == "@":
+                self.tokens.append(Token(TokenType.AT, "@", start_line, start_col))
             elif ch == "?":
                 self.tokens.append(Token(TokenType.QUESTION, "?", start_line, start_col))
             elif ch == ":":

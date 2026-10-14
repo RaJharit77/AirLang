@@ -3,3 +3,5 @@ __pycache__/
 build/
 *.egg-info/
 .pytest_cache/
+tools/air/target/
+tools/air/Cargo.lock.bak

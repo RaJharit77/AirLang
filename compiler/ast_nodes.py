@@ -250,6 +250,16 @@ class Return(Node):
     value: Optional[Node] = None
 
 @dataclass
+class Break(Node):
+    """break — quitte la boucle la plus proche."""
+    pass
+
+@dataclass
+class Continue(Node):
+    """continue — passe à l'itération suivante de la boucle la plus proche."""
+    pass
+
+@dataclass
 class IfStmt(Node):
     """if cond\n    body\n[else if ...]\n[else\n    body]\nend"""
     condition:   Node          = None

@@ -1,0 +1,33 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - name: Compiler le formateur (Rust)
+        run: cd tools/air && cargo build --release
+      - name: Tests Python (lexer, parser, checker, codegen, e2e, formateur)
+        run: python -m pytest -q
+      - name: Tests Rust
+        run: cd tools/air && cargo test
+      - name: Tests Ruby
+        run: ruby tools/test_airdoc.rb
+      - name: La doc de la stdlib est à jour
+        run: ruby tools/airdoc.rb --check stdlib/*.air
+      - name: Les exemples sont formatés
+        run: tools/air/target/release/air fmt --check examples tests/programs
+      - name: Mémoire (ASan + UBSan)
+        run: make sanitize

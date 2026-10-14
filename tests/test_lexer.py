@@ -301,10 +301,10 @@ def test_unclosed_string_raises():
 
 def test_unexpected_character_raises():
     try:
-        Lexer("x = 42 @ 5").tokenize()
+        Lexer("x = 42 $ 5").tokenize()
         assert False, "Devrait lever une LexerError"
     except LexerError as e:
-        assert "@" in str(e) or "inattendu" in str(e).lower()
+        assert "$" in str(e) or "inattendu" in str(e).lower()
 
 
 # ── Runner ────────────────────────────────────────────────────────────────────

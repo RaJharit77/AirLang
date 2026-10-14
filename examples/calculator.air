@@ -8,26 +8,26 @@ import math
 ## Représente une opération de calcul avec son historique.
 blueprint Calculator
     history: List[String] = []
-    memory:  Float        = 0.0
+    memory:  Float = 0.0
 
     ## Effectue une opération et retourne le résultat.
     fun calculate(a: Float, op: String, b: Float) -> Result[Float]
         result = match op
-            "+"   => Ok(a + b)
-            "-"   => Ok(a - b)
-            "*"   => Ok(a * b)
-            "/"   => if b == 0.0
-                         Err("Division par zéro impossible")
-                     else
-                         Ok(a / b)
-                     end
-            "%"   => if b == 0.0
-                         Err("Modulo par zéro impossible")
-                     else
-                         Ok(a - math.floor(a / b) * b)
-                     end
-            "**"  => Ok(math.pow(a, b))
-            _     => Err("Opérateur inconnu : " + op)
+            "+" => Ok(a + b)
+            "-" => Ok(a - b)
+            "*" => Ok(a * b)
+            "/" => if b == 0.0
+                Err("Division par zéro impossible")
+            else
+                Ok(a / b)
+            end
+            "%" => if b == 0.0
+                Err("Modulo par zéro impossible")
+            else
+                Ok(a - math.floor(a / b) * b)
+            end
+            "**" => Ok(math.pow(a, b))
+            _ => Err("Opérateur inconnu : " + op)
         end
         return result
     end
@@ -67,7 +67,6 @@ blueprint Calculator
         print("→ Mémoire effacée")
     end
 end
-
 
 ## Convertit un Float en String lisible (supprime le .0 pour les entiers).
 fun float_to_str(n: Float) -> String
@@ -190,7 +189,7 @@ fun main()
         end
 
         a_str = parts.get(0)
-        op    = parts.get(1)
+        op = parts.get(1)
         b_str = parts.get(2)
 
         # Remplace "ans" par le dernier résultat
@@ -211,11 +210,11 @@ fun main()
 
         match calc.calculate(a, op, b)
             Ok(value) =>
-                print("  = " + float_to_str(value))
-                calc.record(a, op, b, value)
-                last_result = value
+            print("  = " + float_to_str(value))
+            calc.record(a, op, b, value)
+            last_result = value
             Err(msg) =>
-                print("✘ Erreur : " + msg)
+            print("✘ Erreur : " + msg)
         end
     end
 end
