@@ -1,0 +1,49 @@
+# v0.4 : fonctions anonymes, Result, match, try/catch, optionnels, modules
+import math
+
+fun make_adder(n: Int) -> Fun[Int, Int]
+    return fun(x: Int) => x + n
+end
+
+fun divide(a: Int, b: Int) -> Result[Int]
+    if b == 0
+        return Err("division par zéro")
+    end
+    return Ok(a / b)
+end
+
+fun twice(a: Int, b: Int) -> Result[Int]
+    q = divide(a, b)?
+    return Ok(q * 2)
+end
+
+fun half(s: String) -> Float?
+    n = s.to_float()
+    if n == null
+        return null
+    end
+    return n / 2.0
+end
+
+fun main()
+    add5 = make_adder(5)
+    print(add5(10), [1, 2, 3].map(fun(x) => x * x), [1, 2, 3, 4].filter(fun(x) => x % 2 == 0))
+    match twice(8, 2)
+        Ok(v) => print("ok {v}")
+        Err(m) => print("erreur {m}")
+    end
+    match twice(1, 0)
+        Ok(v) => print("ok {v}")
+        Err(m) => print("erreur {m}")
+    end
+    try
+        fail("boum")
+    catch e
+        print("capturé : {e.message}")
+    end
+    print(half("5"), half("zz"), math.floor(2.7), "abc" < "abd")
+    for ch in "hé"
+        print(ch)
+    end
+end
+main()

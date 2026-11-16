@@ -80,10 +80,11 @@ def test_missing_end_is_a_syntax_error():
 
 def test_unsupported_feature_is_reported_not_miscompiled():
     try:
-        driver.compile_to_c("x = Ok(1)\nprint(1)\n", "main.air")
+        # une fonction déclarée dans un bloc n'est pas encore supportée
+        driver.compile_to_c("fun main()\n    fun inner()\n        print(1)\n    end\nend\nmain()\n", "main.air")
     except CompileErrors as ce:
         assert "pas encore supporté" in ce.errors[0].message
-        assert "v0.4" in ce.errors[0].hint
+        assert "ROADMAP.md" in ce.errors[0].hint
     else:
         raise AssertionError
 

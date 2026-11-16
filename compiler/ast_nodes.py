@@ -289,9 +289,21 @@ class ForStmt(Node):
 
 @dataclass
 class MatchStmt(Node):
-    """match expr\n    pattern => stmt\n    _ => stmt\nend"""
+    """match expr\n    pattern => instructions...\n    _ => instructions...\nend  (instruction)"""
+    subject: Node          = None
+    cases:   List[tuple]   = field(default_factory=list)  # List[(pattern_Node, List[Node])]
+
+@dataclass
+class MatchExpr(Node):
+    """x = match expr\n    pattern => expression\n    _ => expression\nend  (expression)"""
     subject: Node          = None
     cases:   List[tuple]   = field(default_factory=list)  # List[(pattern_Node, Node)]
+
+@dataclass
+class ResultPattern(Node):
+    """Motif `Ok(v)` ou `Err(m)` d'un match sur un Result : lie `var` à la valeur / au message."""
+    kind: str = "Ok"       # "Ok" | "Err"
+    var:  str = "_"        # "_" = ne rien lier
 
 @dataclass
 class TryCatch(Node):

@@ -34,7 +34,10 @@ def logical_tokens(src: str):
                 out.append(("NL",))
             prev_nl = True
         elif t.type != TokenType.EOF:
-            out.append((t.type, t.value, repr(getattr(t, "parts", None))))
+            parts = getattr(t, "parts", None)
+            if parts:   # on ignore les positions (le formateur change l'indentation)
+                parts = [p[0] if isinstance(p, tuple) else p for p in parts]
+            out.append((t.type, t.value, repr(parts)))
             prev_nl = False
     while out and out[0] == ("NL",):
         out.pop(0)

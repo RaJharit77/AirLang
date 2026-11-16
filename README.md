@@ -3,7 +3,7 @@
 > Simple comme respirer. Léger comme l'air.
 
 AirLang est un langage lisible, à typage progressif, qui se compile en C puis en binaire natif.
-Fichiers sources : `.air`. État actuel : **v0.3 (pré-stable, pas encore la 1.0)**.
+Fichiers sources : `.air`. État actuel : **v0.4 (pré-stable, pas encore la 1.0)**.
 
 ## Installation
 
@@ -57,17 +57,20 @@ main()
 
 AirLang ne convertit jamais implicitement : `"n=" + 1` est une erreur, utilisez `"n={x}"`.
 
-## Ce qui fonctionne en v0.3
+## Ce qui fonctionne en v0.4
 
 Variables, fonctions, `if` / `unless` / `while` / `for`, `break` / `continue`, `if … then … end` sur une ligne,
 chaînes interpolées, **listes et maps typées** (littéraux, indices, méthodes, parcours),
-blueprints avec **héritage et redéfinition de méthodes**, erreurs claires (ligne, colonne, extrait, aide).
+blueprints avec **héritage et redéfinition de méthodes**, erreurs claires (ligne, colonne, extrait, aide),
+**fonctions anonymes et fermetures** (`fun(x) => x * 2`, `map`/`filter`/`reduce`/`each`/`any`/`all`),
+**`Result[T]`** avec `Ok` / `Err` / `?`, **`match`** (instruction et expression) à motifs,
+**`try` / `catch` / `fail`**, **optionnels** `Float?` / `Int?` / `String?` avec promotion après `if x == null … return end`,
+modules `import io` / `import math`, `for ch in texte`, `"42".to_int()`, `"3.5".to_float()`, `texte.slice(a, b)`.
 
 ## Ce qui n'est pas encore là (voir [ROADMAP.md](ROADMAP.md))
 
-- v0.4 : lambdas, `Result` / `Ok` / `Err` / `?`, `match` avec motifs, `try/catch`, traits.
-  → `examples/todo.air` et `examples/calculator.air` ne compilent pas encore.
-- v0.5 : modules (`import` / `export`), `@native`, bibliothèque standard utilisable.
+- v0.5 : imports de fichiers utilisateur (`import "./utils"`), modules `string` et `list`, bibliothèque standard complète.
+  En v0.4 seuls `io` et `math` sont importables ; `@native("symbole_c")` n'est utilisable que comme unique corps d'une fonction.
 - Pas encore de libération de la mémoire (comptage de références prévu) : les programmes longs consomment de la mémoire.
 - `Int / Int` est une division entière (comme en C) ; `float(x) / y` pour une division décimale.
 

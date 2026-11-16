@@ -16,9 +16,10 @@ from .codegen_c import CCodegen
 from .errors import AirError, CodegenError
 from .lexer import Lexer
 from .parser import Parser
+from .modules import resolve_imports
 from .type_checker import TypeChecker
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 RUNTIME_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "runtime"))
 
@@ -39,7 +40,7 @@ def parse(source: str, filename: str = "<source>") -> Program:
 def check(source: str, filename: str = "<source>") -> Program:
     """Lexe, parse et vérifie. Lève CompileErrors s'il y a des erreurs."""
     try:
-        program = parse(source, filename)
+        program = resolve_imports(parse(source, filename), source, filename)
     except AirError as e:
         raise CompileErrors([e])
     checker = TypeChecker(source, filename)

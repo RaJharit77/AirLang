@@ -140,6 +140,7 @@ class Scope:
         self.syms:       Dict[str, Symbol]    = {}
         self.funs:       Dict[str, FunInfo]   = {}
         self.blueprints: Dict[str, object]    = {}
+        self.lambda_node = None        # la Lambda qui possède cette portée (captures)
 
     # variables
     def define_var(self, name: str, t: AirType, kind: Optional[str] = None, const: bool = False):
@@ -213,6 +214,9 @@ STRING_METHODS = {
     "ends_with":   ([T_STRING], T_BOOL),
     "replace":     ([T_STRING, T_STRING], T_STRING),
     "split":       ([T_STRING], AirType("List", [T_STRING])),
+    "slice":       ([T_INT, T_INT], T_STRING),                     # slice(début, fin) : [début, fin[
+    "to_int":      ([], AirType("Int", optional=True)),            # "42" -> 42, "abc" -> null
+    "to_float":    ([], AirType("Float", optional=True)),
 }
 
 
@@ -254,7 +258,7 @@ def map_methods(key: AirType, val: AirType) -> dict:
 class TypeChecker:
 
     # Fonctions intégrées (le contrôle d'arguments est spécifique, cf. _infer_builtin)
-    BUILTINS = {"print", "len", "str", "int", "float", "Ok", "Err"}
+    BUILTINS = {"print", "len", "str", "int", "float", "Ok", "Err", "fail"}
 
     def __init__(self, source: str = "", filename: str = "<source>"):
         self.source   = source
@@ -306,6 +310,19 @@ class TypeChecker:
         if ann.name == "List" and len(params) != 1:
             self._type_err(ann, "`List` attend un type d'élément", hint="écrivez par exemple `List[Int]`",
                            length=4)
+            return T_ANY
+        if ann.name == "Result":
+            if len(params) != 1:
+                self._type_err(ann, "`Result` attend un type de valeur", hint="écrivez par exemple `Result[Float]`",
+                               length=6)
+                return T_ANY
+            if params[0].name in ("Void", "Any", "Null"):
+                self._type_err(ann, f"`Result[{params[0]}]` n'est pas supporté",
+                               hint="utilisez un type précis, ex : `Result[Bool]`", length=6)
+                return T_ANY
+        if ann.name == "Fun" and not params:
+            self._type_err(ann, "`Fun` attend ses types", hint="écrivez par exemple `Fun[Int, Int]` "
+                           "(paramètres puis type de retour)", length=3)
             return T_ANY
         if ann.name == "Map":
             if len(params) != 2:
@@ -386,11 +403,52 @@ class TypeChecker:
             return True
         return False
 
+    def _has_any(self, t: AirType) -> bool:
+        return t.name == "Any" or any(self._has_any(p) for p in t.params)
+
+    def _merge(self, a: AirType, b: AirType) -> Optional[AirType]:
+        """Type commun de deux branches (`if`/`match`) ; préfère le type le plus précis
+        (`Result[Float]` plutôt que `Result[Any]`). None si incompatibles."""
+        ha, hb = self._has_any(a), self._has_any(b)
+        if ha and not hb and self.assignable(a, b):
+            return b
+        if hb and not ha and self.assignable(b, a):
+            return a
+        if self.assignable(a, b):
+            return b
+        if self.assignable(b, a):
+            return a
+        return None
+
+    def _adopt(self, node: Node, target: Optional[AirType]):
+        """Pousse un type `Result[T]` connu dans les `Ok(...)`/`Err(...)` (typés `Result[Any]` quand
+        le contexte manquait) à travers `if` et `match` en expression."""
+        if target is None or target.name != "Result" or not target.params or self._has_any(target):
+            return
+        cur = getattr(node, "ty", None)
+        if isinstance(node, Call) and getattr(node, "builtin", None) in ("Ok", "Err"):
+            if cur is not None and cur.name == "Result" and self._has_any(cur):
+                node.ty = target
+        elif isinstance(node, IfExpression):
+            self._adopt(node.then_value, target)
+            self._adopt(node.else_value, target)
+            if cur is not None and self._has_any(cur):
+                node.ty = target
+        elif isinstance(node, MatchExpr):
+            for _, v in node.cases:
+                self._adopt(v, target)
+            if cur is not None and self._has_any(cur):
+                node.ty = target
+
     def _expect(self, node: Node, got: AirType, expected: AirType, hint: str = None):
+        self._adopt(node, expected)
         if self._retype_literal(node, expected):
             return
         if not self.assignable(got, expected):
             kw = self._kw(node)
+            if hint is None and got.optional and not expected.optional and got.name == expected.name:
+                who = f"`{node.name}`" if isinstance(node, Identifier) else "cette valeur"
+                hint = f"{who} peut être null : testez-la d'abord, ex : `if x == null ... end` ou `if x != null ... end`"
             self.err(err_type_mismatch(str(expected), str(got), hint=hint, **kw))
 
     def _expect_bool(self, node: Node, what: str):
@@ -498,7 +556,7 @@ class TypeChecker:
         if isinstance(s, TryCatch):
             return [s.try_body, s.catch_body]
         if isinstance(s, MatchStmt):
-            return [[a] for _, a in s.cases]
+            return [body for _, body in s.cases]
         return []
 
     # champs / méthodes avec héritage
@@ -527,12 +585,76 @@ class TypeChecker:
 
     # ── Statements ────────────────────────────────────────────────────────────
 
-    def check_block(self, stmts: List[Node], name: str = "block"):
+    # ── Promotion après un test de nullité ───────────────────────────────────
+    # `if x == null ... end` : dans la branche `x != null` (ou après une sortie anticipée),
+    # `x` est traité comme non-null. Le codegen lit alors la valeur (`Identifier.narrow_from`).
+
+    def _null_facts(self, cond: Node) -> tuple:
+        """(noms non-null quand `cond` est vraie, noms non-null quand `cond` est fausse)."""
+        if isinstance(cond, BinaryOp):
+            if cond.op in ("==", "!="):
+                a, b = cond.left, cond.right
+                ident = (a if isinstance(a, Identifier) and isinstance(b, NullLiteral)
+                         else b if isinstance(b, Identifier) and isinstance(a, NullLiteral) else None)
+                if ident is not None:
+                    return ({ident.name}, set()) if cond.op == "!=" else (set(), {ident.name})
+            elif cond.op in ("and", "or"):
+                lt, lf = self._null_facts(cond.left)
+                rt, rf = self._null_facts(cond.right)
+                return (lt | rt, lf & rf) if cond.op == "and" else (lt & rt, lf | rf)
+        elif isinstance(cond, UnaryOp) and cond.op == "not":
+            t, f = self._null_facts(cond.operand)
+            return f, t
+        return set(), set()
+
+    def _narrow(self, names):
+        """Dans la portée courante, `names` (variables optionnelles) deviennent non-null."""
+        for name in names:
+            sym = self.scope.resolve_symbol(name)
+            if sym is not None and sym.type.optional and sym.kind != "field":
+                ns = Symbol(AirType(sym.type.name, sym.type.params, False), sym.kind, sym.const)
+                ns.narrow_from = getattr(sym, "narrow_from", None) or sym.type
+                self.scope.syms[name] = ns
+
+    def _always_exits(self, stmts: List[Node]) -> bool:
+        """Vrai si l'exécution ne passe jamais après ce bloc (return, break, continue, fail)."""
+        for st in stmts:
+            if isinstance(st, (Return, Break, Continue)):
+                return True
+            if isinstance(st, ExprStmt) and isinstance(st.expr, Call) and getattr(st.expr, "builtin", None) == "fail":
+                return True
+            if isinstance(st, IfStmt) and st.else_body:
+                branches = [st.then_body] + [b for _, b in st.elif_clauses] + [st.else_body]
+                if all(self._always_exits(b) for b in branches):
+                    return True
+        return False
+
+    def check_block(self, stmts: List[Node], name: str = "block", narrow=()):
         outer = self.scope
         self.scope = outer.child(name)
+        self._narrow(narrow)
+        self._check_stmts(stmts)
+        self.scope = outer
+
+    def _check_stmts(self, stmts: List[Node]):
+        """Vérifie une suite d'instructions dans la portée courante, avec promotion après sortie anticipée."""
         for s in stmts:
             self.check_stmt(s)
+            if isinstance(s, IfStmt):               # `if x == null ... return end` : la suite est non-null
+                t_true, t_false = self._null_facts(s.condition)
+                if not s.elif_clauses and self._always_exits(s.then_body) and not s.else_body:
+                    self._narrow(t_false)
+                elif not s.elif_clauses and s.else_body and self._always_exits(s.else_body) \
+                        and not self._always_exits(s.then_body):
+                    self._narrow(t_true)
+
+    def _infer_narrowed(self, node: Node, names, expected=None) -> AirType:
+        outer = self.scope
+        self.scope = outer.child("test")
+        self._narrow(names)
+        t = self.infer(node, expected)
         self.scope = outer
+        return t
 
     def check_stmt(self, node: Node):
         if isinstance(node, VarDecl):
@@ -579,7 +701,7 @@ class TypeChecker:
 
     def _check_var_decl(self, node: VarDecl):
         ann = self._resolve_type(node.type_ann) if node.type_ann else None
-        val = self.infer(node.value) if node.value is not None else None
+        val = self.infer(node.value, ann) if node.value is not None else None
         if val is not None and val.name == "Void":
             self._type_err(node.value, "cette expression ne produit pas de valeur")
             val = T_ANY
@@ -607,7 +729,11 @@ class TypeChecker:
         return t.name in ("List", "Map") and (not t.params or any(p.name == "Any" for p in t.params))
 
     def _check_assign(self, node: Assign):
-        val = self.infer(node.value)
+        expected = None
+        if isinstance(node.value, Lambda) and isinstance(node.target, Identifier):
+            sym0 = self.scope.resolve_symbol(node.target.name)
+            expected = sym0.type if sym0 else None
+        val = self.infer(node.value, expected)
         if val.name == "Void":
             self._type_err(node.value, "cette expression ne produit pas de valeur")
             val = T_ANY
@@ -694,14 +820,14 @@ class TypeChecker:
 
         ctx = {"declared": info.return_type, "returns": [], "name": node.name}
         self._fun_ctx = ctx
-        for s in node.body:
-            self.check_stmt(s)
+        self._check_stmts(node.body)
 
         # type de retour déduit
         if info.return_type is None:
             info.return_type = self._unify_returns(ctx, node)
         ret = info.return_type
-        if ret.name not in ("Void", "Any") and not self._always_returns(node.body):
+        native = any(d.startswith("native:") for d in node.decorators)
+        if not native and ret.name not in ("Void", "Any") and not self._always_returns(node.body):
             self.err(err_missing_return(node.name, **self._kw(node)))
         node.ret_ty = ret
         node.info = info
@@ -733,6 +859,14 @@ class TypeChecker:
                 branches = [s.then_body] + [b for _, b in s.elif_clauses] + [s.else_body]
                 if all(self._always_returns(b) for b in branches):
                     return True
+            if isinstance(s, TryCatch) and self._always_returns(s.try_body) and self._always_returns(s.catch_body):
+                return True
+            if isinstance(s, MatchStmt) and s.cases:
+                pats = [p for p, _ in s.cases]
+                total = (any(isinstance(p, Identifier) and p.name == "_" for p in pats)
+                         or {p.kind for p in pats if isinstance(p, ResultPattern)} == {"Ok", "Err"})
+                if total and all(self._always_returns(b) for _, b in s.cases):
+                    return True
         return False
 
     def _ensure_checked(self, info: FunInfo):
@@ -745,7 +879,7 @@ class TypeChecker:
             self._type_err(node, "`return` en dehors d'une fonction",
                            hint="`return` n'est valide que dans le corps d'une fonction", length=6)
             return
-        t = self.infer(node.value) if node.value is not None else T_VOID
+        t = self.infer(node.value, ctx["declared"]) if node.value is not None else T_VOID
         node.value_type = t
         declared = ctx["declared"]
         ctx["returns"].append((t, node))
@@ -786,12 +920,15 @@ class TypeChecker:
 
     def _check_if(self, node: IfStmt):
         self._expect_bool(node.condition, "la condition de `if`")
-        self.check_block(node.then_body, "if")
+        t_true, t_false = self._null_facts(node.condition)
+        self.check_block(node.then_body, "if", t_true)
         for cond, body in node.elif_clauses:
             self._expect_bool(cond, "la condition de `else if`")
-            self.check_block(body, "else if")
+            et, ef = self._null_facts(cond)
+            self.check_block(body, "else if", et | t_false)
+            t_false = t_false | ef
         if node.else_body:
-            self.check_block(node.else_body, "else")
+            self.check_block(node.else_body, "else", t_false)
 
     def _check_for(self, node: ForStmt):
         it = node.iterable
@@ -808,6 +945,8 @@ class TypeChecker:
                 elem = t.params[0]
             elif t.name == "Map" and len(t.params) == 2:
                 elem = t.params[0]          # parcourir une map donne ses clés
+            elif t == T_STRING:
+                elem = T_STRING             # parcourir une chaîne donne ses caractères
             elif t.name == "Any":
                 elem = T_ANY
             else:
@@ -821,25 +960,22 @@ class TypeChecker:
         if node.index_var:
             self.scope.define_var(node.index_var, T_INT, kind="local")
         self._loop_depth += 1
-        for s in node.body:
-            self.check_stmt(s)
+        self._check_stmts(node.body)
         self._loop_depth -= 1
         self.scope = outer
 
     def _check_match(self, node: MatchStmt):
         subj = self.infer(node.subject)
-        for pattern, action in node.cases:
-            if isinstance(pattern, Identifier) and pattern.name == "_":
-                pattern.ty = T_ANY
-            else:
-                pt = self.infer(pattern)
-                if (isinstance(pattern, (IntLiteral, FloatLiteral, StringLiteral, BoolLiteral))
-                        and not self.assignable(pt, subj) and not self.assignable(subj, pt)):
-                    self._type_err(pattern, f"ce motif est de type `{pt}` mais la valeur testée est de type `{subj}`")
+        for pattern, body in node.cases:
+            binds = self._check_pattern(pattern, subj)
             outer = self.scope
             self.scope = outer.child("match")
-            self.check_stmt(action)
+            for name, t in binds.items():
+                self.scope.define_var(name, t, kind="local")
+            for st in body:
+                self.check_stmt(st)
             self.scope = outer
+        self._check_exhaustive(node, subj, node.cases, as_value=False)
 
     def _check_try_catch(self, node: TryCatch):
         self.check_block(node.try_body, "try")
@@ -847,17 +983,24 @@ class TypeChecker:
         self.scope = outer.child("catch")
         if node.error_var:
             t = self._resolve_type(node.error_type) if node.error_type else AirType("Error")
+            if t.name not in ("Error", "Any"):
+                self._type_err(node.error_type, f"`catch` attend le type `Error`, pas `{t}`",
+                               hint="écrivez `catch err` ou `catch err: Error`")
+                t = AirType("Error")
             self.scope.define_var(node.error_var, t, kind="local")
-        for s in node.catch_body:
-            self.check_stmt(s)
+        self._check_stmts(node.catch_body)
         self.scope = outer
 
     # ── Inférence ────────────────────────────────────────────────────────────
 
-    def infer(self, node: Node) -> AirType:
-        """Infère le type d'une expression et l'enregistre dans `node.ty`."""
+    def infer(self, node: Node, expected: Optional[AirType] = None) -> AirType:
+        """Infère le type d'une expression et l'enregistre dans `node.ty`.
+        `expected` (type `Fun[...]` attendu par le contexte) sert à typer les paramètres
+        d'une fonction anonyme : `numbers.map(fun(x) => x * 2)`."""
         if node is None:
             return T_ANY
+        if isinstance(node, (Lambda, Call, IfExpression, MatchExpr)):
+            node.expected = expected
         t = self._infer(node)
         node.ty = t
         return t
@@ -893,7 +1036,13 @@ class TypeChecker:
         if isinstance(node, Identifier):
             return self._infer_identifier(node)
         if isinstance(node, BinaryOp):
-            return self._binary_type(node.op, self.infer(node.left), self.infer(node.right), node)
+            lt = self.infer(node.left)
+            if node.op in ("and", "or"):
+                t_true, t_false = self._null_facts(node.left)
+                rt = self._infer_narrowed(node.right, t_true if node.op == "and" else t_false)
+            else:
+                rt = self.infer(node.right)
+            return self._binary_type(node.op, lt, rt, node)
         if isinstance(node, UnaryOp):
             return self._infer_unary(node)
         if isinstance(node, Call):
@@ -922,34 +1071,176 @@ class TypeChecker:
             return T_ANY
 
         if isinstance(node, Lambda):
-            outer = self.scope
-            self.scope = outer.child("lambda")
-            for p in node.params:
-                p.ty = self._resolve_type(p.type_ann)
-                self.scope.define_var(p.name, p.ty, kind="local")
-            ret = self.infer(node.body) if isinstance(node.body, Node) else T_ANY
-            self.scope = outer
-            return AirType("Fun", [ret])
+            return self._infer_lambda(node)
 
         if isinstance(node, IfExpression):
             self._expect_bool(node.condition, "la condition de `if`")
-            t1, t2 = self.infer(node.then_value), self.infer(node.else_value)
-            if self.assignable(t1, t2):
-                return t2
-            if self.assignable(t2, t1):
-                return t1
-            self._type_err(node.else_value, f"les deux branches ont des types différents : `{t1}` et `{t2}`")
-            return T_ANY
+            exp = getattr(node, "expected", None)
+            f_true, f_false = self._null_facts(node.condition)
+            t1 = self._infer_narrowed(node.then_value, f_true, exp)
+            t2 = self._infer_narrowed(node.else_value, f_false, exp)
+            t = self._merge(t1, t2)
+            if t is None:
+                self._type_err(node.else_value, f"les deux branches ont des types différents : `{t1}` et `{t2}`")
+                return T_ANY
+            self._adopt(node.then_value, t)
+            self._adopt(node.else_value, t)
+            return t
+
+        if isinstance(node, MatchExpr):
+            return self._infer_match_expr(node)
 
         if isinstance(node, ErrorPropagate):
-            inner = self.infer(node.expr)
-            if inner.name == "Result" and inner.params:
-                return inner.params[0]
-            return inner
+            return self._infer_propagate(node)
 
         if isinstance(node, ExprStmt):
             return self.infer(node.expr)
         return T_ANY
+
+    def _infer_propagate(self, node: ErrorPropagate) -> AirType:
+        """`expr?` : si `expr` est un Err, la fonction courante retourne cette erreur tout de suite."""
+        inner = self.infer(node.expr)
+        if inner.name == "Any":
+            return T_ANY
+        if inner.name != "Result" or not inner.params:
+            self._type_err(node, f"l'opérateur `?` s'applique à un `Result`, pas à `{inner}`",
+                           hint="`?` propage l'erreur d'un `Result[T]` et donne la valeur `T`")
+            return inner
+        ctx = self._fun_ctx
+        in_lambda, s = False, self.scope
+        while s is not None:
+            in_lambda = in_lambda or s.lambda_node is not None
+            s = s.parent
+        decl = ctx["declared"] if ctx else None
+        if in_lambda or decl is None or decl.name != "Result":
+            self._type_err(node, "`?` n'est valide que dans une fonction qui retourne un `Result[...]`",
+                           hint=("ajoutez `-> Result[Type]` à la fonction" if not in_lambda
+                                 else "dans une fonction anonyme, utilisez `match` à la place"))
+        else:
+            node.fun_ret = decl
+        return inner.params[0]
+
+    def _check_pattern(self, pattern: Node, subj: AirType) -> Dict[str, AirType]:
+        """Vérifie un motif de `match` ; retourne les variables qu'il lie (`Ok(v)` → v)."""
+        if isinstance(pattern, Identifier) and pattern.name == "_":
+            pattern.ty = T_ANY
+            return {}
+        if isinstance(pattern, ResultPattern):
+            if subj.name == "Any":
+                t = T_ANY
+            elif subj.name != "Result" or not subj.params:
+                self._type_err(pattern, f"le motif `{pattern.kind}(...)` ne s'applique qu'à un `Result`, "
+                                        f"pas à `{subj}`", length=len(pattern.kind))
+                return {}
+            else:
+                t = subj.params[0] if pattern.kind == "Ok" else T_STRING
+            pattern.ty = t
+            return {} if pattern.var == "_" else {pattern.var: t}
+        pt = self.infer(pattern)
+        if subj.name == "Result":
+            self._type_err(pattern, "un `Result` se teste avec `Ok(valeur)` et `Err(message)`")
+        elif (isinstance(pattern, (IntLiteral, FloatLiteral, StringLiteral, BoolLiteral))
+                and not self.assignable(pt, subj) and not self.assignable(subj, pt)):
+            self._type_err(pattern, f"ce motif est de type `{pt}` mais la valeur testée est de type `{subj}`")
+        return {}
+
+    def _check_exhaustive(self, node: Node, subj: AirType, cases: list, as_value: bool):
+        pats = [p for p, _ in cases]
+        if any(isinstance(p, Identifier) and p.name == "_" for p in pats):
+            return
+        if subj.name == "Result":
+            kinds = {p.kind for p in pats if isinstance(p, ResultPattern)}
+            for k in ("Ok", "Err"):
+                if k not in kinds:
+                    self._type_err(node, f"ce `match` ne couvre pas le cas `{k}(...)`",
+                                   hint="ajoutez la branche manquante, ou `_ => ...` pour tous les autres cas",
+                                   length=5)
+                    return
+        elif as_value and not (subj.name == "Bool" and {getattr(p, "value", None) for p in pats} == {True, False}):
+            self._type_err(node, "un `match` utilisé comme valeur doit couvrir tous les cas",
+                           hint="ajoutez une dernière branche `_ => ...`", length=5)
+
+    def _infer_match_expr(self, node: MatchExpr) -> AirType:
+        subj = self.infer(node.subject)
+        exp = getattr(node, "expected", None)
+        for pattern, value in node.cases:
+            binds = self._check_pattern(pattern, subj)
+            outer = self.scope
+            self.scope = outer.child("match")
+            for name, t in binds.items():
+                self.scope.define_var(name, t, kind="local")
+            self.infer(value, exp)
+            self.scope = outer
+        self._check_exhaustive(node, subj, node.cases, as_value=True)
+        if not node.cases:
+            self._type_err(node, "ce `match` n'a aucune branche", length=5)
+            return T_ANY
+        result = node.cases[0][1].ty
+        for _, v in node.cases[1:]:
+            merged = self._merge(result, v.ty)
+            if merged is None:
+                self._type_err(v, f"les branches du `match` ont des types différents : `{result}` et `{v.ty}`")
+                return T_ANY
+            result = merged
+        for _, v in node.cases:
+            self._adopt(v, result)
+        return result
+
+    def _infer_lambda(self, node: Lambda) -> AirType:
+        """Fonction anonyme : type `Fun[P1, ..., Pn, R]` (le DERNIER paramètre de type est le retour).
+        Les variables de l'extérieur utilisées dans le corps sont CAPTURÉES PAR VALEUR au moment
+        où la fonction est créée (`node.captures`)."""
+        exp = getattr(node, "expected", None)
+        exp_params: List[AirType] = []
+        exp_ret: Optional[AirType] = None
+        if exp is not None and exp.name == "Fun" and exp.params:
+            exp_params, exp_ret = exp.params[:-1], exp.params[-1]
+            if len(exp_params) != len(node.params):
+                self._type_err(node, f"cette fonction anonyme prend {len(node.params)} paramètre(s), "
+                                     f"mais {len(exp_params)} sont attendus ici", length=3)
+        node.captures, node.uses_self = {}, False
+        outer = self.scope
+        self.scope = outer.child("lambda")
+        self.scope.lambda_node = node
+        ptypes = []
+        for i, p in enumerate(node.params):
+            if p.type_ann is not None:
+                p.ty = self._resolve_type(p.type_ann)
+            elif i < len(exp_params):
+                p.ty = exp_params[i]
+            else:
+                p.ty = T_ANY
+                self._type_err(p, f"le type du paramètre `{p.name}` ne peut pas être déduit",
+                               hint=f"annotez-le : `fun({p.name}: Int) => ...`", length=len(p.name))
+            self.scope.define_var(p.name, p.ty, kind="local")
+            ptypes.append(p.ty)
+        ret = self.infer(node.body)
+        self.scope = outer
+        if exp_ret is not None and exp_ret.name not in ("Any", "Void") and self.assignable(ret, exp_ret):
+            ret = exp_ret             # ex. un corps `Int` pour un retour attendu `Float`
+        node.ret_ty = ret
+        return AirType("Fun", ptypes + [ret])
+
+    def _note_capture(self, name: str, sym: "Symbol"):
+        """`name` est utilisé ici : si elle vient de l'extérieur d'une ou plusieurs lambdas,
+        chaque lambda traversée la capture (un champ d'objet capture `self`)."""
+        if sym.kind == "global":
+            return
+        s = self.scope
+        while s is not None and name not in s.syms:
+            if s.lambda_node is not None:
+                if sym.kind == "field":
+                    s.lambda_node.uses_self = True
+                else:
+                    s.lambda_node.captures.setdefault(name, getattr(sym, "narrow_from", None) or sym.type)
+            s = s.parent
+
+    def _note_self_use(self):
+        s = self.scope
+        while s is not None:
+            if s.lambda_node is not None:
+                s.lambda_node.uses_self = True
+            s = s.parent
 
     def _unify_elements(self, elems: List[Node], what: str) -> AirType:
         if not elems:
@@ -971,21 +1262,34 @@ class TypeChecker:
             return T_ANY
         sym = self.scope.resolve_symbol(node.name)
         if sym is None:
-            if self.scope.resolve_fun(node.name) is not None:
-                self._type_err(node, f"`{node.name}` est une fonction : appelez-la avec des parenthèses",
-                               hint=f"écrivez `{node.name}(...)`")
-                return T_ANY
+            finfo = self.scope.resolve_fun(node.name)
+            if finfo is not None:                     # une fonction utilisée comme VALEUR
+                self._ensure_checked(finfo)
+                node.kind = "function"
+                return AirType("Fun", [t for _, t in finfo.params] + [finfo.return_type or T_ANY])
             self.err(err_undefined_var(
                 node.name, node.line, node.column,
                 suggestions=did_you_mean(node.name, self.scope.all_var_names()),
                 source=self.source, filename=self.filename))
             return T_ANY
         node.kind = sym.kind
+        node.narrow_from = getattr(sym, "narrow_from", None)
+        self._note_capture(node.name, sym)
         return sym.type
 
     # opérateurs ----------------------------------------------------------------
 
     def _binary_type(self, op: str, lt: AirType, rt: AirType, node: Node) -> AirType:
+        if op not in ("==", "!=", "and", "or"):
+            sides = ((node.left, lt), (node.right, rt)) if isinstance(node, BinaryOp) \
+                else ((node.target, lt), (node.value, rt))           # `x += 1`
+            for side, t in sides:
+                if t.optional and t.name not in ("Any", "Null"):
+                    who = f"`{side.name}`" if isinstance(side, Identifier) else "cette valeur"
+                    self._type_err(side, f"{who} peut être null (`{t}`) : on ne peut pas l'utiliser ici",
+                                   hint="testez-la d'abord : `if x == null ... end` (puis `return`, `continue`...)",
+                                   length=len(side.name) if isinstance(side, Identifier) else 1)
+                    return T_BOOL if op in ("<", ">", "<=", ">=") else T_ANY
         if lt.name == "Any" or rt.name == "Any":
             return T_BOOL if op in ("==", "!=", "<", ">", "<=", ">=", "and", "or") else T_ANY
 
@@ -1003,6 +1307,10 @@ class TypeChecker:
             self._type_err(node, f"l'opérateur `{op}` n'est pas défini pour `{lt}` et `{rt}`")
             return T_ANY
 
+        if op in ("==", "!=", "<", ">", "<=", ">=") and "Fun" in (lt.name, rt.name):
+            self._type_err(node, "on ne peut pas comparer des fonctions",
+                           hint="comparez plutôt leurs résultats")
+            return T_BOOL
         if op in ("==", "!="):
             ok = (self.assignable(lt, rt) or self.assignable(rt, lt))
             if not ok:
@@ -1010,8 +1318,8 @@ class TypeChecker:
             return T_BOOL
 
         if op in ("<", ">", "<=", ">="):
-            if not (is_numeric(lt) and is_numeric(rt)):
-                self._type_err(node, f"l'opérateur `{op}` attend des nombres, pas `{lt}` et `{rt}`")
+            if not (is_numeric(lt) and is_numeric(rt)) and not (lt == T_STRING and rt == T_STRING):
+                self._type_err(node, f"l'opérateur `{op}` attend des nombres (ou deux String), pas `{lt}` et `{rt}`")
             return T_BOOL
 
         if op in ("and", "or"):
@@ -1067,7 +1375,7 @@ class TypeChecker:
         for pname, ptype in params:
             if pname in resolved:
                 a = resolved[pname]
-                at = self.infer(a)
+                at = self.infer(a, ptype)
                 if at.name == "Void":
                     self._type_err(a, "cette expression ne produit pas de valeur")
                 else:
@@ -1084,13 +1392,31 @@ class TypeChecker:
                 return []
         return out
 
+    def _infer_fun_value_call(self, node: Call, ft: AirType, label: str) -> AirType:
+        """Appel d'une valeur de type `Fun[P..., R]` (variable, paramètre, résultat d'appel)."""
+        node.is_fun_call = True
+        params, ret = ft.params[:-1], ft.params[-1]
+        info = FunInfo([(f"arg{i}", t) for i, t in enumerate(params)], ret)
+        node.resolved = self._bind_args(label, info, node, node.args, node.kwargs)
+        return ret
+
     def _infer_call(self, node: Call) -> AirType:
         if not isinstance(node.callee, Identifier):
-            self.infer(node.callee)
+            ct = self.infer(node.callee)
+            if ct.name == "Fun" and ct.params:
+                return self._infer_fun_value_call(node, ct, "fonction")
             for a in node.args:
                 self.infer(a)
+            if ct.name != "Any":
+                self._type_err(node, f"on ne peut pas appeler une valeur de type `{ct}`",
+                               hint="seules les fonctions (`Fun[...]`) peuvent être appelées")
             return T_ANY
         name = node.callee.name
+        sym = self.scope.resolve_symbol(name)
+        if sym is not None and sym.type.name == "Fun" and sym.type.params:
+            node.callee.ty, node.callee.kind = sym.type, sym.kind
+            self._note_capture(name, sym)
+            return self._infer_fun_value_call(node, sym.type, name)
         info = self.scope.resolve_fun(name)
         node.callee.ty = T_ANY
 
@@ -1099,6 +1425,7 @@ class TypeChecker:
             if found:
                 owner, minfo = found
                 node.self_method = owner
+                self._note_self_use()
                 self._ensure_checked(minfo)
                 node.resolved = self._bind_args(name, minfo, node, node.args, node.kwargs)
                 return minfo.return_type or T_ANY
@@ -1119,7 +1446,35 @@ class TypeChecker:
         node.resolved = self._bind_args(name, info, node, node.args, node.kwargs)
         return info.return_type or T_ANY
 
+    def _infer_ok_err(self, name: str, node: Call) -> AirType:
+        """`Ok(v)` / `Err("message")` : le type vient du contexte (retour, annotation) ou de `v`."""
+        node.builtin = name
+        exp = getattr(node, "expected", None)
+        exp_res = exp if (exp is not None and exp.name == "Result" and exp.params) else None
+        if len(node.args) != 1 or node.kwargs:
+            self.err(err_wrong_arg_count(name, 1, len(node.args) + len(node.kwargs), **self._kw(node)))
+            for a in node.args:
+                self.infer(a)
+            return AirType("Result", [T_ANY])
+        a = node.args[0]
+        node.resolved = [a]
+        if name == "Err":
+            at = self.infer(a)
+            self._expect(a, at, T_STRING, hint="le message d'une erreur est une String")
+            return exp_res if exp_res is not None else AirType("Result", [T_ANY])
+        want = exp_res.params[0] if exp_res is not None and exp_res.params[0].name != "Any" else None
+        at = self.infer(a, want)
+        if at.name in ("Void", "Null"):
+            self._type_err(a, f"`Ok(...)` attend une valeur, pas `{at}`")
+            return AirType("Result", [T_ANY])
+        if want is not None:
+            self._expect(a, at, want)
+            return exp_res
+        return AirType("Result", [at])
+
     def _infer_builtin(self, name: str, node: Call) -> AirType:
+        if name in ("Ok", "Err"):
+            return self._infer_ok_err(name, node)
         node.builtin = name
         for a in node.args:
             self.infer(a)
@@ -1131,6 +1486,12 @@ class TypeChecker:
                 if a.ty is not None and a.ty.name == "Void":
                     self._type_err(a, "cette expression ne produit pas de valeur à afficher")
             return T_VOID
+        if name == "fail":
+            if len(node.args) != 1:
+                self.err(err_wrong_arg_count(name, 1, len(node.args), **self._kw(node)))
+            else:
+                self._expect(node.args[0], node.args[0].ty, T_STRING, hint="`fail(\"message\")` prend un message")
+            return T_VOID
         if name in ("len", "str", "int", "float"):
             if len(node.args) != 1:
                 self.err(err_wrong_arg_count(name, 1, len(node.args), **self._kw(node)))
@@ -1139,16 +1500,84 @@ class TypeChecker:
             return {"len": T_INT, "str": T_STRING, "int": T_INT, "float": T_FLOAT}[name]
         return AirType("Result", [T_ANY])      # Ok / Err
 
+    LIST_HOF = ("map", "filter", "reduce", "each", "any", "all")
+
+    def _infer_list_hof(self, node: MethodCall, lst: AirType) -> AirType:
+        """map / filter / reduce / each / any / all : le type de l'élément est connu, donc les
+        paramètres d'une fonction anonyme sont déduits (`nums.map(fun(x) => x * 2)`)."""
+        elem, m, args = lst.params[0], node.method, node.args
+        node.owner = "List"
+        want = 2 if m == "reduce" else 1
+        if len(args) != want or node.kwargs:
+            self.err(err_wrong_arg_count(m, want, len(args) + len(node.kwargs), **self._kw(node)))
+            for a in args:
+                self.infer(a)
+            return T_ANY
+        if m == "reduce":
+            acc = self.infer(args[0])
+            if acc.name in ("Null", "Any", "Void") or acc.optional:
+                self._type_err(args[0], f"la valeur initiale de `reduce` doit avoir un type précis, pas `{acc}`")
+                self.infer(args[1])
+                return T_ANY
+            want_t = AirType("Fun", [acc, elem, acc])
+            ft = self.infer(args[1], want_t)
+            self._expect(args[1], ft, want_t,
+                         hint=f"la fonction reçoit (accumulateur: {acc}, élément: {elem}) et retourne {acc}")
+            node.param_types, node.resolved = [acc, want_t], list(args)
+            return acc
+        exp_ret = {"map": T_ANY, "each": T_ANY}.get(m, T_BOOL)
+        ft = self.infer(args[0], AirType("Fun", [elem, exp_ret]))
+        if ft.name != "Fun" or len(ft.params) != 2:
+            if ft.name != "Any":
+                self._type_err(args[0], f"`{m}` attend une fonction à 1 paramètre, pas `{ft}`",
+                               hint=f"ex : `{m}(fun(x) => ...)`")
+            return T_ANY
+        if not self.assignable(elem, ft.params[0]):
+            self._type_err(args[0], f"cette fonction prend un `{ft.params[0]}`, mais les éléments sont des `{elem}`")
+        ret = ft.params[-1]
+        if m in ("filter", "any", "all") and ret.name not in ("Bool", "Any"):
+            self._type_err(args[0], f"la fonction de `{m}` doit retourner un Bool, pas `{ret}`",
+                           hint="utilisez une comparaison, ex : `fun(x) => x > 0`")
+        node.param_types, node.resolved = [ft], [args[0]]
+        if m == "map":
+            if ret.name in ("Void", "Any"):
+                self._type_err(args[0], "la fonction de `map` doit retourner une valeur")
+                return T_ANY
+            return AirType("List", [ret])
+        return {"filter": lst, "each": T_VOID, "any": T_BOOL, "all": T_BOOL}[m]
+
     def _infer_method_call(self, node: MethodCall) -> AirType:
         obj_t = self.infer(node.obj)
-        for a in node.args:
-            self.infer(a)
-        for _, v in node.kwargs:
-            self.infer(v)
+        hof = obj_t.name == "List" and bool(obj_t.params) and node.method in self.LIST_HOF
+        if not hof:
+            for a in node.args:
+                if not isinstance(a, Lambda):      # une lambda est typée selon son paramètre attendu
+                    self.infer(a)
+            for _, v in node.kwargs:
+                if not isinstance(v, Lambda):
+                    self.infer(v)
+        if hof:
+            return self._infer_list_hof(node, obj_t)
 
         if obj_t.optional and obj_t.name not in ("Any", "Null"):
             name = node.obj.name if isinstance(node.obj, Identifier) else "valeur"
             self.err(err_null_access(name, **self._kw(node.obj)))
+
+        if obj_t.name == "Result" and obj_t.params:
+            t = obj_t.params[0]
+            table = {"is_ok": ([], T_BOOL), "is_err": ([], T_BOOL), "unwrap": ([], t),
+                     "unwrap_or": ([t], t), "message": ([], T_STRING)}
+            sig = table.get(node.method)
+            if sig is None:
+                self._type_err(node, f"`{obj_t}` n'a pas de méthode `{node.method}`",
+                               hint="méthodes : " + ", ".join(table) + " ; ou utilisez `match` avec Ok/Err",
+                               length=len(node.method))
+                return T_ANY
+            params, ret = sig
+            node.owner = "Result"
+            info = FunInfo([(f"arg{i}", pt) for i, pt in enumerate(params)], ret)
+            node.resolved = self._bind_args(node.method, info, node, node.args, node.kwargs)
+            return ret
 
         if obj_t.name == "String":
             sig = STRING_METHODS.get(node.method)
@@ -1223,7 +1652,7 @@ class TypeChecker:
         defaults = self.all_defaults(node.blueprint)
         given: Dict[str, Node] = {}
         for fname, v in node.kwargs:
-            vt = self.infer(v)
+            vt = self.infer(v, fields.get(fname))
             if fname not in fields:
                 near = did_you_mean(fname, fields)
                 self._type_err(v, f"`{node.blueprint}` n'a pas de champ `{fname}`",
@@ -1278,4 +1707,11 @@ class TypeChecker:
             return T_ANY
         if obj_t.name == "String" and node.member == "length":
             return T_INT
+        if obj_t.name == "Error":
+            if node.member != "message":
+                self._type_err(node, f"`Error` n'a pas de champ `{node.member}`",
+                               hint="le seul champ est `message`", length=len(node.member))
+                return T_ANY
+            node.owner = "Error"
+            return T_STRING
         return T_ANY

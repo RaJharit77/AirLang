@@ -186,10 +186,29 @@ class Parser:
         return_type = None
         if self.match(TokenType.ARROW):
             return_type = self.parse_type_annotation()
-        body = self.parse_block((TokenType.END,))
+        decorators = list(decorators or [])
+        if self.at(TokenType.AT):                      # corps natif : `@native("symbole_c")`
+            decorators.append("native:" + self._parse_native_symbol())
+            body = []
+        else:
+            body = self.parse_block((TokenType.END,))
         self.expect_end("fun")
         return FunDecl(name=name, params=params, return_type=return_type,
-                       body=body, decorators=decorators or [], **pos)
+                       body=body, decorators=decorators, **pos)
+
+    def _parse_native_symbol(self) -> str:
+        at = self.advance()                            # @
+        name = self.current()
+        if name.type != TokenType.IDENT or name.value != "native":
+            raise ParseError(
+                f"décorateur inconnu `@{name.value}`", name.line, name.column,
+                filename=self.filename, source=self.source,
+                hint='seul `@native("symbole_c")` existe, comme unique contenu d\'une fonction')
+        self.advance()
+        self.expect(TokenType.LPAREN)
+        sym = self.expect(TokenType.STRING).value
+        self.expect(TokenType.RPAREN)
+        return sym
 
     def parse_fun_signature(self) -> FunDecl:
         """Signature de méthode de trait : `fun nom(params) [-> Type]`, sans corps ni `end`."""
@@ -349,18 +368,57 @@ class Parser:
         self.expect_end("for")
         return ForStmt(var=var, index_var=index_var, iterable=iterable, body=body, **pos)
 
+    def parse_pattern(self) -> Node:
+        """Motif d'un `match` : `Ok(v)`, `Err(m)`, `_`, ou un littéral."""
+        tok = self.current()
+        if tok.type == TokenType.IDENT and tok.value in ("Ok", "Err") and self.peek(1).type == TokenType.LPAREN:
+            pos = self._pos()
+            self.advance()
+            self.advance()
+            var = self.expect(TokenType.IDENT).value
+            self.expect(TokenType.RPAREN)
+            return ResultPattern(kind=tok.value, var=var, **pos)
+        return self.parse_expression()
+
+    def _at_arm_start(self) -> bool:
+        """Vrai si les tokens suivants forment `motif =>` (début d'une nouvelle branche)."""
+        save = self.pos
+        try:
+            self.parse_pattern()
+            return self.at(TokenType.FAT_ARROW)
+        except ParseError:
+            return False
+        finally:
+            self.pos = save
+
     def parse_match(self) -> MatchStmt:
+        """`match` en instruction : chaque branche est une suite d'instructions."""
         pos = self._pos()
         self.advance()  # match
         subject = self.parse_expression()
-        cases   = []
+        cases = []
         while not self.at(TokenType.END, TokenType.EOF):
-            pattern = self.parse_expression()
+            pattern = self.parse_pattern()
             self.expect(TokenType.FAT_ARROW)
-            action  = self.parse_statement()
-            cases.append((pattern, action))
+            body = []
+            while not self.at(TokenType.END, TokenType.EOF) and not self._at_arm_start():
+                body.append(self.parse_statement())
+            cases.append((pattern, body))
         self.expect_end("match")
         return MatchStmt(subject=subject, cases=cases, **pos)
+
+    def parse_match_expr(self) -> MatchExpr:
+        """`match` en expression : chaque branche est UNE expression."""
+        pos = self._pos()
+        self.advance()  # match
+        subject = self.parse_expression()
+        cases = []
+        while not self.at(TokenType.END, TokenType.EOF):
+            pattern = self.parse_pattern()
+            self.expect(TokenType.FAT_ARROW)
+            cases.append((pattern, self.parse_expression()))
+        self.expect_end("match")
+        return MatchExpr(subject=subject, cases=cases, **pos)
 
     def parse_try_catch(self) -> TryCatch:
         pos = self._pos()
@@ -383,7 +441,7 @@ class Parser:
         # La valeur doit commencer sur la même ligne que `return` ; sinon c'est un `return` nu.
         same_line = self.current().line == pos["line"]
         if same_line and not self.at(TokenType.END, TokenType.ELSE, TokenType.EOF,
-                                     TokenType.FUN, TokenType.BLUEPRINT):
+                                     TokenType.BLUEPRINT):
             value = self.parse_expression()
         return Return(value=value, **pos)
 
@@ -554,6 +612,9 @@ class Parser:
                 index = self.parse_expression()
                 self.expect(TokenType.RBRACKET)
                 expr = IndexAccess(obj=expr, index=index, **pos)
+            elif self.cont_at(TokenType.LPAREN) and isinstance(expr, Call):
+                args, kwargs = self.parse_call_args()          # f(1)(2) : appel du résultat d'un appel
+                expr = Call(callee=expr, args=args, kwargs=kwargs, **pos)
             elif self.cont_at(TokenType.QUESTION):
                 self.advance()
                 expr = ErrorPropagate(expr=expr, **pos)
@@ -600,6 +661,10 @@ class Parser:
         # Lambda : fun(params) => expr
         if tok.type == TokenType.FUN:
             return self.parse_lambda()
+
+        # match en expression : x = match v ... end
+        if tok.type == TokenType.MATCH:
+            return self.parse_match_expr()
 
         # If expression inline : if cond then a else b end
         if tok.type == TokenType.IF:
@@ -684,7 +749,7 @@ class Parser:
         pos = self._pos()
         self.advance()  # if
         cond = self.parse_expression()
-        self.expect(TokenType.THEN)
+        self.match(TokenType.THEN)             # `then` facultatif (obligatoire si la valeur commence par `-`)
         then_val = self.parse_expression()
         self.expect(TokenType.ELSE)
         else_val = self.parse_expression()

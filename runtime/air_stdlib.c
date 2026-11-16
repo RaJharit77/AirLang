@@ -24,9 +24,17 @@
  * MODULE : io  (wrappeurs autour des fonctions air_file_* du runtime)
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-AirResult air_io_read(AirStr path)   { return air_file_read(path);  }
-AirResult air_io_write(AirStr path, AirStr content) { return air_file_write(path, content); }
-AirResult air_io_append(AirStr path, AirStr content){ return air_file_append(path, content); }
+/* io.read échoue (catchable avec try/catch) si le fichier est illisible. */
+AirStr air_io_read(AirStr path) {
+    AirResult r = air_file_read(path);
+    if (!r.is_ok) {
+        AirStr msg = air_concat(air_str("impossible de lire le fichier : "), path);
+        air_fail(msg);
+    }
+    return *(AirStr*)r.value;
+}
+bool air_io_write(AirStr path, AirStr content)  { return air_file_write(path, content).is_ok; }
+bool air_io_append(AirStr path, AirStr content) { return air_file_append(path, content).is_ok; }
 bool      air_io_exists(AirStr path) { return air_file_exists(path); }
 
 bool air_io_delete(AirStr path) {

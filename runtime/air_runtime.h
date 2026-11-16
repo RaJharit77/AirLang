@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,13 @@ typedef struct {
     char*  data;
     size_t len;
 } AirStr;
+
+/* Fonction AirLang (valeur) : pointeur de fonction C + environnement capturé (peut être NULL).
+ * Signature réelle : R (*)(void* env, P1, P2, ...) — le compilateur connaît le type exact. */
+typedef struct {
+    void* fn;
+    void* env;
+} AirFn;
 
 /* Valeur générique (Any) */
 typedef void* AirVal;
@@ -98,23 +106,45 @@ double  air_str_to_float(AirStr s);   /* panic si la chaîne n'est pas un nombre
 bool    air_string_starts_with(AirStr s, AirStr prefix);
 bool    air_string_ends_with(AirStr s, AirStr suffix);
 
+/* ── Erreurs d'exécution et try/catch ────────────────────────────────────────
+ * Toute erreur d'exécution passe par air_fail / air_runtime_error. Dans un bloc `try`,
+ * elle saute (longjmp) vers le `catch` le plus proche ; sinon le programme s'arrête. */
+typedef struct AirTryFrame {
+    jmp_buf jb;
+    struct AirTryFrame* prev;
+} AirTryFrame;
+extern AirTryFrame* air_try_top;
+extern AirStr air_last_error;
+void air_fail(AirStr message) __attribute__((noreturn));
+void air_runtime_error(const char* fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
+static inline void air_try_pop(int n) { while (n-- > 0 && air_try_top) air_try_top = air_try_top->prev; }
+
+/* Valeurs optionnelles (`Int?`, `Float?`, ...) : `has` dit si la valeur est présente. */
+typedef struct { bool has; int64_t v; } AirOpt_Int;
+typedef struct { bool has; double  v; } AirOpt_Float;
+typedef struct { bool has; bool    v; } AirOpt_Bool;
+typedef struct { bool has; AirStr  v; } AirOpt_String;
+AirOpt_Int   air_str_parse_int(AirStr s);     /* "42" -> 42 ; "abc" -> null */
+AirOpt_Float air_str_parse_float(AirStr s);   /* "3.5" -> 3.5 ; "abc" -> null */
+AirStr       air_str_slice(AirStr s, int64_t start, int64_t end);   /* [start, end) en caractères */
+int          air_str_cmp(AirStr a, AirStr b);
+
 /* Littéral de chaîne : pas d'allocation (stockage statique, ne jamais libérer) */
 #define AIR_STR_LIT(s) ((AirStr){ (char*)(s), sizeof(s) - 1 })
 
 /* Division/modulo entiers avec garde division par zéro */
 static inline int64_t air_idiv(int64_t a, int64_t b) {
-    if (b == 0) { fflush(stdout); fprintf(stderr, "\nErreur d'exécution : division par zéro\n"); exit(1); }
+    if (b == 0) air_runtime_error("division par zéro");
     return a / b;
 }
 static inline int64_t air_imod(int64_t a, int64_t b) {
-    if (b == 0) { fflush(stdout); fprintf(stderr, "\nErreur d'exécution : modulo par zéro\n"); exit(1); }
+    if (b == 0) air_runtime_error("modulo par zéro");
     return a % b;
 }
 
 /* ── Erreurs d'exécution ────────────────────────────────────────────────────── */
 
 /* Affiche « Erreur d'exécution : ... » sur stderr puis quitte avec le code 1. */
-void air_runtime_error(const char* fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
 
 /* ── Listes ─────────────────────────────────────────────────────────────────── */
 
