@@ -245,6 +245,7 @@ def test_match_statement():
     stmt = first_stmt(src).body[0]
     assert isinstance(stmt, MatchStmt)
     assert len(stmt.cases) >= 2
+    assert all(isinstance(body, list) for _, body in stmt.cases)
 
 
 # ── Expressions ───────────────────────────────────────────────────────────────

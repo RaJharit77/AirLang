@@ -6,6 +6,7 @@
 #include "air_runtime.h"
 #include <stdarg.h>
 #include <ctype.h>
+#include <errno.h>
 #include <time.h>
 
 /* ── Mémoire ─────────────────────────────────────────────────────────────────── */
@@ -72,9 +73,28 @@ AirStr air_int_to_str(int64_t n) {
     return air_str(buf);
 }
 
+/* Représentation la plus courte qui se relit EXACTEMENT (1.0 → "1.0", 0.1 → "0.1",
+ * 1234567.5 → "1234567.5"). Les entiers gardent ".0" pour rester reconnaissables comme Float. */
 AirStr air_float_to_str(double f) {
     char buf[64];
-    snprintf(buf, sizeof(buf), "%g", f);
+    if (f != f)  return air_str("nan");
+    if (f == 1.0 / 0.0)  return air_str("inf");
+    if (f == -1.0 / 0.0) return air_str("-inf");
+    for (int prec = 1; prec <= 17; prec++) {
+        snprintf(buf, sizeof(buf), "%.*g", prec, f);
+        if (strtod(buf, NULL) == f) {
+            double a = f < 0 ? -f : f;
+            if (strpbrk(buf, "eE") && (a == 0.0 || (a >= 1e-4 && a < 1e15))) {
+                /* notation décimale : on cherche le plus petit nombre de décimales exact */
+                for (int d = 0; d <= 20; d++) {
+                    snprintf(buf, sizeof(buf), "%.*f", d, f);
+                    if (strtod(buf, NULL) == f) break;
+                }
+            }
+            break;
+        }
+    }
+    if (!strpbrk(buf, ".eE")) strncat(buf, ".0", sizeof(buf) - strlen(buf) - 1);
     return air_str(buf);
 }
 
@@ -143,15 +163,31 @@ AirStr air_str_replace(AirStr s, AirStr from, AirStr to) {
 
 /* ── Erreurs d'exécution ─────────────────────────────────────────────────────── */
 
-void air_runtime_error(const char* fmt, ...) {
+AirTryFrame* air_try_top = NULL;
+AirStr air_last_error = {(char*)"", 0};
+
+void air_fail(AirStr message) {
+    if (air_try_top) {                         /* un `try` est actif : on saute vers son `catch` */
+        char* copy = (char*)air_alloc(message.len + 1);      /* le message doit survivre à la pile abandonnée */
+        if (message.len) memcpy(copy, message.data, message.len);
+        copy[message.len] = '\0';
+        air_last_error = (AirStr){copy, message.len};
+        AirTryFrame* f = air_try_top;
+        air_try_top = f->prev;
+        longjmp(f->jb, 1);
+    }
     fflush(stdout);
-    fprintf(stderr, "\nErreur d'exécution : ");
+    fprintf(stderr, "\nErreur d'exécution : %.*s\n", (int)message.len, message.data ? message.data : "");
+    exit(1);
+}
+
+void air_runtime_error(const char* fmt, ...) {
+    char buf[512];
     va_list ap;
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    fprintf(stderr, "\n");
-    exit(1);
+    air_fail(air_str(buf));
 }
 
 /* ── Petit tampon de texte (utilisé par l'affichage des listes et des maps) ───── */
@@ -503,9 +539,7 @@ bool air_is_ok(AirResult r) {
 AirVal air_unwrap(AirResult r) {
     if (!r.is_ok) {
         AirStr* msg = (AirStr*)r.value;
-        fprintf(stderr, "✘ AirLang Unwrap sur Err : %s\n",
-                msg ? msg->data : "erreur inconnue");
-        exit(1);
+        air_runtime_error("unwrap() sur une erreur : %s", msg ? msg->data : "erreur inconnue");
     }
     return r.value;
 }
@@ -607,19 +641,66 @@ AirStr air_bool_to_str(bool b) {
 int64_t air_str_to_int(AirStr s) {
     char* end = NULL;
     long long v = strtoll(s.data ? s.data : "", &end, 10);
-    if (!s.data || s.len == 0 || *end != '\0') {
-        fprintf(stderr, "\nErreur d'exécution : \"%s\" n'est pas un entier\n", s.data ? s.data : "");
-        exit(1);
-    }
+    if (!s.data || s.len == 0 || *end != '\0')
+        air_runtime_error("\"%s\" n'est pas un entier", s.data ? s.data : "");
     return (int64_t)v;
 }
 
 double air_str_to_float(AirStr s) {
     char* end = NULL;
     double v = strtod(s.data ? s.data : "", &end);
-    if (!s.data || s.len == 0 || *end != '\0') {
-        fprintf(stderr, "\nErreur d'exécution : \"%s\" n'est pas un nombre\n", s.data ? s.data : "");
-        exit(1);
-    }
+    if (!s.data || s.len == 0 || *end != '\0')
+        air_runtime_error("\"%s\" n'est pas un nombre", s.data ? s.data : "");
     return v;
+}
+
+
+/* ── Conversions optionnelles, découpage et comparaison de chaînes ─────────────── */
+
+/* Copie `s` sans espaces de bord dans `buf` (NUL-terminé) ; retourne false si trop long ou vide. */
+static bool air_trimmed_copy(AirStr s, char* buf, size_t cap) {
+    size_t a = 0, b = s.len;
+    while (a < b && isspace((unsigned char)s.data[a])) a++;
+    while (b > a && isspace((unsigned char)s.data[b - 1])) b--;
+    if (b == a || b - a >= cap) return false;
+    memcpy(buf, s.data + a, b - a);
+    buf[b - a] = '\0';
+    return true;
+}
+
+AirOpt_Int air_str_parse_int(AirStr s) {
+    char buf[64], *end = NULL;
+    AirOpt_Int r = {false, 0};
+    if (!s.data || !air_trimmed_copy(s, buf, sizeof buf)) return r;
+    errno = 0;
+    long long v = strtoll(buf, &end, 10);
+    if (*end != '\0' || errno == ERANGE) return r;
+    r.has = true; r.v = (int64_t)v;
+    return r;
+}
+
+AirOpt_Float air_str_parse_float(AirStr s) {
+    char buf[64], *end = NULL;
+    AirOpt_Float r = {false, 0.0};
+    if (!s.data || !air_trimmed_copy(s, buf, sizeof buf)) return r;
+    errno = 0;
+    double v = strtod(buf, &end);
+    if (*end != '\0' || errno == ERANGE) return r;
+    r.has = true; r.v = v;
+    return r;
+}
+
+/* Sous-chaîne [start, end) ; les bornes sont ramenées dans [0, longueur]. */
+AirStr air_str_slice(AirStr s, int64_t start, int64_t end) {
+    if (start < 0) start = 0;
+    if (end > (int64_t)s.len) end = (int64_t)s.len;
+    if (start >= end) return AIR_STR_LIT("");
+    return air_str_n(s.data + start, (size_t)(end - start));
+}
+
+int air_str_cmp(AirStr a, AirStr b) {
+    size_t n = a.len < b.len ? a.len : b.len;
+    int c = n ? memcmp(a.data, b.data, n) : 0;
+    if (c) return c;
+    return a.len < b.len ? -1 : (a.len > b.len ? 1 : 0);
 }
