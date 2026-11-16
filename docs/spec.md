@@ -291,6 +291,11 @@ response = http.get("https://api.example.com/data")
 user = User.new(name: "Alice", age: 25)
 ```
 
+**État v0.5** : `import io|math|string|list` (bibliothèque standard) et `import "./chemin"` (fichier, relatif au
+fichier qui importe ; `.air` facultatif) fonctionnent, avec `as` pour renommer. Seules les fonctions et constantes
+**exportées** sont visibles ; un fichier n'est chargé qu'une fois ; les imports circulaires sont refusés.
+Pas encore : `import net.http`, blueprints/traits dans un module (v0.6).
+
 ### Structure d'un module
 
 ```air

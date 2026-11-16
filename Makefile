@@ -39,9 +39,9 @@ fmt-check: air
 # Mémoire : détecte accès hors limites et comportements indéfinis (les fuites sont connues : pas encore de comptage de références).
 sanitize:
 	@mkdir -p build/san
-	@for f in tests/programs/collections tests/programs/inheritance tests/programs/loops tests/programs/v04 examples/students; do \
+	@for f in tests/programs/collections tests/programs/inheritance tests/programs/loops tests/programs/v04 examples/modules/main examples/students; do \
 	  n=$$(basename $$f); \
-	  $(PY) -m compiler build --emit-c $$f.air > build/san/$$n.c 2>/dev/null || $(PY) -c "import sys;sys.path.insert(0,'.');from compiler import driver;print(driver.compile_to_c(open('$$f.air').read(),'$$n.air'))" > build/san/$$n.c; \
+	  $(PY) -m compiler build --emit-c $$f.air > build/san/$$n.c 2>/dev/null || $(PY) -c "import sys;sys.path.insert(0,'.');from compiler import driver;print(driver.compile_to_c(open('$$f.air').read(),'$$f.air'))" > build/san/$$n.c; \
 	  gcc -std=gnu11 -g -O1 -fsanitize=address,undefined -w -Iruntime build/san/$$n.c runtime/air_runtime.c runtime/air_stdlib.c -lm -o build/san/$$n && \
 	  ASAN_OPTIONS=detect_leaks=0 build/san/$$n > /dev/null && echo "ok  $$n"; \
 	done
