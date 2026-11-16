@@ -1,0 +1,12 @@
+# Module utilisateur : seules les déclarations `export` sont visibles de l'extérieur.
+import math
+
+const SIDES_OF_SQUARE = 4
+
+export fun circle_area(radius: Float) -> Float
+    return math.PI * radius * radius
+end
+
+export fun square_perimeter(side: Int) -> Int
+    return side * SIDES_OF_SQUARE
+end

@@ -493,7 +493,7 @@ def test_unknown_module_and_member_errors():
     assert "introuvable" in str(ei.value.errors[0])
     with pytest.raises(CompileErrors) as ei:
         driver.compile_to_c(prog("print(math.zzz(1.0))", "import math"), "t.air")
-    assert "n'a pas de fonction `zzz`" in str(ei.value.errors[0])
+    assert "n'a pas de `zzz`" in str(ei.value.errors[0])
 
 
 def test_calculator_example():
