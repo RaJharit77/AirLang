@@ -1,0 +1,15 @@
+# Exemple 4 — Montre : imports de fichiers, modules standard string et list
+# Lancer : python3 -m compiler run examples/modules/main.air
+import "./geometry"
+import string
+import list
+
+fun main()
+    area = geometry.circle_area(2.0)
+    print("Aire du cercle : {area}")
+    print("Périmètre du carré : {geometry.square_perimeter(5)}")
+    print(string.pad_left("7", 3, "0"), string.capitalize("bonjour"), string.repeat("=-", 5))
+    numbers = list.range(1, 6)
+    print("Somme de {numbers} : {list.sum(numbers)}")
+end
+main()

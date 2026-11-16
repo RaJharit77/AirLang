@@ -1,13 +1,14 @@
 # AirLang — Audit de l'existant et roadmap vers 1.0.0
 
-## Statut (v0.4.0)
+## Statut (v0.5.0)
 
 | Étape | État |
 |---|---|
 | v0.2 — pipeline réel, erreurs unifiées, CLI, codegen typé | **fait** |
 | v0.3 — listes/maps typées, blueprints + héritage, `break`/`continue`, ordre d'évaluation | **fait** |
 | v0.4 — lambdas, `Result`/`?`, `match` à motifs, `try/catch`, optionnels, `io`/`math`, traits | **fait** |
-| v0.5 — imports de fichiers, stdlib complète (`string`, `list`), comptage de références | à faire |
+| v0.5 — imports de fichiers (`export`, cycles), stdlib `string`/`list` | **fait** |
+| v0.6 — comptage de références, blueprints/traits dans les modules, REPL, `air test` | à faire |
 | v0.6+ — REPL, `air test`, coloration VS Code, fuzzing, gel de la syntaxe | à faire |
 | 1.0.0 | à faire |
 

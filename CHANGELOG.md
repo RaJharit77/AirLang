@@ -1,5 +1,27 @@
 # Journal des changements
 
+## 0.5.0
+
+**Ajouts**
+- **Imports de fichiers** : `import "./utils/formatter"` et `import "./x" as y`, chemins relatifs au fichier importateur.
+  Seules les déclarations `export` sont visibles (`n'est pas exporté par …` sinon) ; imports imbriqués et partagés
+  (chargés une seule fois) ; détection des cycles (`a.air -> b.air -> a.air`).
+- Chaque module est vérifié seul : une erreur de type dans `bad.air` est affichée avec le fichier et la ligne de `bad.air`.
+- Modules standard `string` (`repeat pad_left pad_right reverse capitalize count is_empty`) et `list`
+  (`range sum sum_float max_int min_int average`), écrits en AirLang.
+- Un nom local (paramètre, variable, boucle, `catch`, motif) n'est jamais confondu avec un nom du module.
+- `examples/modules/` : exemple multi-fichiers.
+
+**Changements incompatibles**
+- `stdlib/string.air` et `stdlib/list.air` sont réécrits (anciens `@native` pour un runtime de listes abandonné) ;
+  les méthodes `s.split()`, `xs.map()`… restent des méthodes intégrées, sans import.
+- `import x` avec `x` inconnu est une erreur (la liste des modules disponibles est donnée).
+
+**Limites connues**
+- Un module ne contient que des fonctions, constantes et imports ; blueprints/traits exportés : v0.6.
+- La mémoire n'est toujours pas libérée : le comptage de références est repoussé à la v0.6 (changement trop profond pour un palier de modules).
+- `import net.http` (modules à points) n'est pas supporté.
+
 ## 0.4.0
 
 **Ajouts**

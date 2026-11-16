@@ -1,222 +1,79 @@
 # list
 
-Manipulation de listes.
-Import : `import list  (ou utiliser les méthodes directement sur la liste)`
+Utilitaires sur les listes de nombres (écrits en AirLang).
+Import : `import list`
+Les méthodes de base (`xs.map(...)`, `xs.sort()`, `xs.length()`...) n'ont pas besoin d'import.
 
 > Généré par `tools/airdoc.rb` depuis `stdlib/list.air` — ne pas modifier à la main.
 
-## `length`
+## `range`
 
 ```air
-fun length(lst: List[Any]) -> Int
+fun range(from: Int, to: Int) -> List[Int]
 ```
 
-Retourne le nombre d'éléments d'une liste.
+Liste des entiers de `from` (inclus) à `to` (exclu).
 
 ```air
-list.length([1, 2, 3])  # => 3
+list.range(1, 4)  # => [1, 2, 3]
 ```
 
-## `get`
+## `sum`
 
 ```air
-fun get(lst: List[Any], i: Int) -> Any
+fun sum(xs: List[Int]) -> Int
 ```
 
-Retourne l'élément à l'index i (supporte les index négatifs : -1 = dernier).
+Somme d'une liste d'entiers (0 si elle est vide).
 
 ```air
-list.get(items, 0)
+list.sum([1, 2, 3])  # => 6
 ```
 
-## `set`
+## `sum_float`
 
 ```air
-fun set(lst: List[Any], i: Int, value: Any)
+fun sum_float(xs: List[Float]) -> Float
 ```
 
-Modifie l'élément à l'index i.
+Somme d'une liste de flottants (0.0 si elle est vide).
 
 ```air
-list.set(items, 0, "nouveau")
+list.sum_float([1.5, 2.5])  # => 4.0
 ```
 
-## `append`
+## `max_int`
 
 ```air
-fun append(lst: List[Any], item: Any)
+fun max_int(xs: List[Int]) -> Int?
 ```
 
-Ajoute un élément à la fin de la liste.
+Plus grand entier de la liste, ou null si elle est vide.
 
 ```air
-list.append(items, "Alice")
+list.max_int([3, 9, 2])  # => 9
 ```
 
-## `prepend`
+## `min_int`
 
 ```air
-fun prepend(lst: List[Any], item: Any)
+fun min_int(xs: List[Int]) -> Int?
 ```
 
-Insère un élément au début de la liste.
+Plus petit entier de la liste, ou null si elle est vide.
 
 ```air
-list.prepend(items, "premier")
+list.min_int([3, 9, 2])  # => 2
 ```
 
-## `pop`
+## `average`
 
 ```air
-fun pop(lst: List[Any]) -> Any
+fun average(xs: List[Float]) -> Float?
 ```
 
-Supprime et retourne le dernier élément.
+Moyenne d'une liste de flottants, ou null si elle est vide.
 
 ```air
-last = list.pop(items)
-```
-
-## `pop_front`
-
-```air
-fun pop_front(lst: List[Any]) -> Any
-```
-
-Supprime et retourne le premier élément.
-
-```air
-first = list.pop_front(items)
-```
-
-## `map`
-
-```air
-fun map(lst: List[Any], fn: Fun) -> List[Any]
-```
-
-Retourne une nouvelle liste avec chaque élément transformé par fn.
-
-```air
-doubled = list.map(numbers, fun(x) => x * 2)
-```
-
-## `filter`
-
-```air
-fun filter(lst: List[Any], fn: Fun) -> List[Any]
-```
-
-Retourne une nouvelle liste avec uniquement les éléments où fn retourne true.
-
-```air
-evens = list.filter(numbers, fun(x) => x % 2 == 0)
-```
-
-## `reduce`
-
-```air
-fun reduce(lst: List[Any], initial: Any, fn: Fun) -> Any
-```
-
-Réduit la liste à une valeur unique via fn(accumulateur, élément).
-
-```air
-total = list.reduce(numbers, 0, fun(acc, x) => acc + x)
-```
-
-## `sort`
-
-```air
-fun sort(lst: List[Any], cmp_fn: Fun)
-```
-
-Trie la liste en place selon une fonction de comparaison.
-
-```air
-list.sort(names, fun(a, b) => a < b)
-```
-
-## `unique`
-
-```air
-fun unique(lst: List[Any]) -> List[Any]
-```
-
-Retourne une nouvelle liste sans doublons.
-
-```air
-unique_names = list.unique(names)
-```
-
-## `flatten`
-
-```air
-fun flatten(lst: List[List[Any]]) -> List[Any]
-```
-
-Aplatit une liste de listes en une liste simple.
-
-```air
-list.flatten([[1, 2], [3, 4]])  # => [1, 2, 3, 4]
-```
-
-## `reverse`
-
-```air
-fun reverse(lst: List[Any]) -> List[Any]
-```
-
-Retourne une nouvelle liste avec les éléments en ordre inverse.
-
-```air
-list.reverse([1, 2, 3])  # => [3, 2, 1]
-```
-
-## `slice`
-
-```air
-fun slice(lst: List[Any], start: Int, end: Int) -> List[Any]
-```
-
-Retourne une sous-liste entre start (inclus) et end (exclus).
-
-```air
-list.slice(items, 1, 3)
-```
-
-## `concat`
-
-```air
-fun concat(a: List[Any], b: List[Any]) -> List[Any]
-```
-
-Concatène deux listes en une nouvelle liste.
-
-```air
-all = list.concat(list_a, list_b)
-```
-
-## `contains`
-
-```air
-fun contains(lst: List[Any], item: Any) -> Bool
-```
-
-Vérifie si un élément est présent dans la liste.
-
-```air
-list.contains(names, "Alice")
-```
-
-## `index_of`
-
-```air
-fun index_of(lst: List[Any], item: Any) -> Int
-```
-
-Retourne l'index du premier élément égal à item (-1 si absent).
-
-```air
-i = list.index_of(names, "Bob")
+list.average([1.0, 2.0, 6.0])  # => 3.0
 ```
