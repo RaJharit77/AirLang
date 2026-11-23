@@ -6,7 +6,7 @@ de l'importateur, et les accès `math.floor(...)` sont réécrits en appels dire
 
 v0.5 : fonctions et constantes ; `export` contrôle ce qui est visible d'un fichier utilisateur ;
 imports imbriqués, partagés (un fichier n'est chargé qu'une fois) et détection des cycles.
-Les blueprints/traits dans un module viennent en v0.6.
+v0.6 : les blueprints et traits peuvent aussi être exportés (`geo.Point`, `geo.Point.new(...)`).
 """
 
 from __future__ import annotations
@@ -16,8 +16,9 @@ import os
 import re
 from typing import Dict, List, Optional, Set
 
-from .ast_nodes import (Call, ExportDecl, ForStmt, FunDecl, Identifier, ImportDecl, Lambda,
-                        MemberAccess, MethodCall, Node, Param, Program, ResultPattern, TryCatch, VarDecl)
+from .ast_nodes import (BlueprintDecl, Call, ExportDecl, ForStmt, FunDecl, Identifier, ImportDecl, Lambda,
+                        MemberAccess, MethodCall, NewInstance, Node, Param, Program, ResultPattern,
+                        TraitDecl, TryCatch, TypeAnnotation, VarDecl)
 from .errors import AirError, AirNameError
 from .lexer import Lexer
 from .parser import Parser
@@ -80,9 +81,10 @@ _ACTIVE: List[str] = []     # fichiers en cours de vérification (pour voir les 
 
 class _Module:
     def __init__(self, table: Dict[str, str], exported: Set[str], visible_all: bool):
-        self.table = table                      # nom -> nom préfixé
+        self.table = table                      # nom -> nom préfixé (fonctions, constantes ET types)
         self.exported = exported                # noms visibles depuis l'extérieur
         self.visible_all = visible_all
+        self.types: Set[str] = set()            # parmi `table`, les blueprints et traits
 
 
 class _Loader:
@@ -131,43 +133,73 @@ class _Loader:
             self.stack.pop()
         table: Dict[str, str] = {}
         exported: Set[str] = set()
+        types: Set[str] = set()
         decls: List[Node] = []
         for st in body:
             d = st.declaration if isinstance(st, ExportDecl) else st
-            if isinstance(d, (FunDecl, VarDecl)):
+            if isinstance(d, (FunDecl, VarDecl, BlueprintDecl, TraitDecl)):
                 table[d.name] = prefix + d.name
+                if isinstance(d, (BlueprintDecl, TraitDecl)):
+                    types.add(d.name)
                 if isinstance(st, ExportDecl):
                     exported.add(d.name)
                 decls.append(st)
             else:
-                what = type(d).__name__
-                hint = ("les blueprints et traits dans un module arrivent en v0.6"
-                        if what in ("BlueprintDecl", "TraitDecl")
-                        else "un module ne contient que des fonctions, constantes et imports")
                 raise AirNameError(
                     "déclaration non supportée dans un module", st.line, st.column,
-                    filename=path, source=src, length=3, hint=hint)
+                    filename=path, source=src, length=3,
+                    hint="un module ne contient que des fonctions, constantes, blueprints, traits et imports")
+        value_table = {n: m for n, m in table.items() if n not in types}
+        type_table = {n: table[n] for n in types}
+
+        def rename_types(n):
+            if isinstance(n, TypeAnnotation) and n.name in type_table:
+                n.name = type_table[n.name]
+            elif isinstance(n, NewInstance) and n.blueprint in type_table:
+                n.blueprint = type_table[n.blueprint]
+            elif isinstance(n, BlueprintDecl):
+                if n.extends in type_table:
+                    n.extends = type_table[n.extends]
+                n.implements = [type_table.get(i, i) for i in n.implements]
+            return n
+
+        def rename_values(root, shadow):
+            def ren(n):
+                if isinstance(n, Identifier) and n.name in value_table and n.name not in shadow:
+                    n.name = value_table[n.name]
+                return n
+            return _walk_replace(root, ren)
+
         for st in decls:
             d = st.declaration if isinstance(st, ExportDecl) else st
-            shadow = _local_names(d) if isinstance(d, FunDecl) else set()
-
-            def ren(n, shadow=shadow):
-                if isinstance(n, Identifier) and n.name in table and n.name not in shadow:
-                    n.name = table[n.name]
-                return n
+            _walk_replace(d, rename_types)
             if isinstance(d, FunDecl):
-                _walk_replace(d.body, ren)
+                rename_values(d.body, _local_names(d))
                 for p in d.params:
                     if p.default is not None:
-                        p.default = _walk_replace(p.default, ren)
-            elif d.value is not None:
-                d.value = _walk_replace(d.value, ren)
+                        p.default = rename_values(p.default, set())
+            elif isinstance(d, VarDecl):
+                if d.value is not None:
+                    d.value = rename_values(d.value, set())
+            elif isinstance(d, BlueprintDecl):
+                fields = {f.name for f in d.fields}
+                for f in d.fields:
+                    if getattr(f, "default", None) is not None:
+                        f.default = rename_values(f.default, set())
+                for m in d.methods:
+                    rename_values(m.body, _local_names(m) | fields)
+                    for p in m.params:
+                        if p.default is not None:
+                            p.default = rename_values(p.default, set())
+            elif isinstance(d, TraitDecl):
+                pass
         for st in decls:
             d = st.declaration if isinstance(st, ExportDecl) else st
             d.name = table[d.name]
         self.decls.extend(decls)
-        return _Module(table, exported or set(), visible_all) if not visible_all else \
-            _Module(table, set(table), True)
+        mod = _Module(table, set(table) if visible_all else exported, visible_all)
+        mod.types = types
+        return mod
 
 
 class _Cycle(Exception):
@@ -226,7 +258,31 @@ def resolve_into(program: Program, source: str, filename: str, loader: _Loader) 
                 source=source, length=length, hint=f"ajoutez `export` devant `{member}` dans le module")
         return Identifier(name=mod.table[member], line=n.line, column=n.column)
 
+    def type_lookup(n, dotted: str):
+        alias, member = dotted.split(".", 1)
+        if alias not in modules:
+            return dotted                               # laissé tel quel : le vérificateur signalera l'erreur
+        mod = modules[alias]
+        if member not in mod.types:
+            raise AirNameError(
+                f"le module `{alias}` n'a pas de type `{member}`", n.line, n.column, filename=filename,
+                source=source, length=len(dotted),
+                hint="types disponibles : " + (", ".join(sorted(mod.types & mod.exported)) or "(aucun)"))
+        if member not in mod.exported:
+            raise AirNameError(
+                f"`{member}` n'est pas exporté par `{alias}`", n.line, n.column, filename=filename,
+                source=source, length=len(dotted), hint=f"ajoutez `export` devant `{member}` dans le module")
+        return mod.table[member]
+
     def rewrite(n):
+        if isinstance(n, TypeAnnotation) and "." in n.name:
+            n.name = type_lookup(n, n.name)
+        elif isinstance(n, NewInstance) and "." in n.blueprint:
+            n.blueprint = type_lookup(n, n.blueprint)
+        elif isinstance(n, BlueprintDecl):
+            if n.extends and "." in n.extends:
+                n.extends = type_lookup(n, n.extends)
+            n.implements = [type_lookup(n, i) if "." in i else i for i in n.implements]
         if isinstance(n, MethodCall) and isinstance(n.obj, Identifier) and n.obj.name in modules:
             callee = lookup(n, n.method, len(n.obj.name) + len(n.method) + 1)
             return Call(callee=callee, args=n.args, kwargs=n.kwargs, line=n.line, column=n.column)

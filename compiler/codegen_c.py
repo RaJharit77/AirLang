@@ -1110,6 +1110,23 @@ class CCodegen:
             return self.to_str(node.args[0])
         if b == "fail":
             return f"air_fail({self.expr(node.args[0])})"
+        if b == "exit":
+            return f"air_exit({self.expr(node.args[0])})"
+        if b == "assert":
+            msg = self.expr(node.args[1]) if len(node.args) == 2 else 'AIR_STR_LIT("assertion échouée")'
+            cond = self.expr(node.args[0])
+            return f"air_assert({cond}, {msg}, {node.line})"
+        if b == "assert_eq":
+            a, c = node.args
+            t = T_FLOAT if "Float" in (a.ty.name, c.ty.name) else a.ty
+            x, y = self.fresh("_air_a"), self.fresh("_air_b")
+            ct = self.ctype(t, node)
+            ca = self._coerce_code(self.expr(a), a.ty, t)
+            cb = self._coerce_code(self.expr(c), c.ty, t)
+            sa = self._to_str_code(x, t, node)
+            sb = self._to_str_code(y, t, node)
+            return (f"({{ {ct} {x} = {ca}; {ct} {y} = {cb}; "
+                    f"if (!{self._equals(x, t, y, t)}) air_assert_eq_fail({sa}, {sb}, {node.line}); }})")
         if b in ("int", "float", "len"):
             a, t = node.args[0], node.args[0].ty
             c = self.expr(a)
