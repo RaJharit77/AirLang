@@ -294,7 +294,20 @@ user = User.new(name: "Alice", age: 25)
 **État v0.5** : `import io|math|string|list` (bibliothèque standard) et `import "./chemin"` (fichier, relatif au
 fichier qui importe ; `.air` facultatif) fonctionnent, avec `as` pour renommer. Seules les fonctions et constantes
 **exportées** sont visibles ; un fichier n'est chargé qu'une fois ; les imports circulaires sont refusés.
-Pas encore : `import net.http`, blueprints/traits dans un module (v0.6).
+**État v0.6** : les blueprints et traits `export`és s'utilisent avec le nom du module : `geo.Point`,
+`geo.Point.new(x: 1)`, `blueprint Circle extends geo.Shape`. Pas encore : `import net.http` (modules à points).
+
+### Tests intégrés (v0.6)
+
+```air
+fun test_addition()
+    assert_eq(1 + 1, 2)            # échoue avec "le premier vaut 1, le second vaut 2 (ligne N)"
+    assert(1 < 2, "message facultatif")
+end
+```
+`air test <fichier|dossier>` exécute toutes les fonctions `test_*` (fichiers `test_*.air` ou `*_test.air`),
+affiche ✔/✘ et quitte avec le code 1 s'il y a un échec. `assert` et `assert_eq` lèvent une erreur rattrapable
+par `try/catch` ; `exit(code)` termine le programme.
 
 ### Structure d'un module
 
