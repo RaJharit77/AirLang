@@ -1,0 +1,28 @@
+# Exemple 5 — Montre : air test (fonctions test_*, assert, assert_eq)
+# Lancer : python3 -m compiler test examples/tests
+import math
+import string
+
+fun test_addition()
+    assert_eq(1 + 1, 2)
+end
+
+fun test_math_module()
+    assert_eq(math.floor(2.7), 2.0)
+    assert(math.is_prime(13), "13 est premier")
+end
+
+fun test_strings()
+    assert_eq(string.pad_left("7", 3, "0"), "007")
+    assert_eq("air".upper(), "AIR")
+end
+
+fun test_division_par_zero_est_rattrapable()
+    failed = false
+    try
+        x = 1 / 0
+    catch e
+        failed = true
+    end
+    assert(failed)
+end
