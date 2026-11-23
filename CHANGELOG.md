@@ -1,5 +1,33 @@
 # Journal des changements
 
+## 0.6.0
+
+**Ajouts**
+- `assert(cond[, "msg"])`, `assert_eq(a, b)` (Int, Float, Bool, String) et `exit(code)`. Les assertions échouent avec une
+  erreur rattrapable qui indique la ligne et, pour `assert_eq`, les deux valeurs.
+- `air test <fichier|dossier>` : exécute les fonctions `test_*`, affiche ✔/✘ par test, code de sortie 1 en cas d'échec.
+  `examples/tests/test_math.air` en est l'exemple.
+- **Blueprints et traits exportables** depuis un module : `geo.Shape`, `geo.Shape.new(...)`, `extends geo.Shape`,
+  héritage entre fichiers, mêmes contrôles `export` que pour les fonctions.
+- Les messages d'erreur n'affichent plus les préfixes internes des modules (`Square`, pas `shapes_1__Square`).
+- Littéraux de liste mixtes : `xs: List[Forme] = [carré, cercle]` et `[carré, cercle]` (ancêtre commun inféré).
+- `docs/memory.md` : état et plan détaillé du comptage de références (v0.7).
+
+**Corrections**
+- Une fonction qui se termine par `fail(...)` ou `exit(...)` n'exige plus de `return` final (fausse erreur « chemin sans return »).
+
+**Changements incompatibles**
+- Les noms `assert`, `assert_eq` et `exit` sont désormais réservés comme fonctions intégrées.
+- `[a, b]` avec deux sous-classes différentes est maintenant accepté (auparavant : erreur) ; une liste annotée
+  vérifie chaque élément contre le type annoncé.
+
+**Limites connues**
+- La mémoire n'est toujours pas libérée (v0.7, voir `docs/memory.md`).
+- Un trait ne peut pas encore servir de type de paramètre ou de variable (`fun f(x: Named)`) : erreur claire du compilateur.
+- Les modules à points (`import net.http`) ne sont pas supportés ; pas de REPL.
+- Les erreurs de types dans un module importé sont signalées avec le bon fichier, mais un module qui échoue à la
+  génération de code (cas rares) peut citer la ligne du fichier principal.
+
 ## 0.5.0
 
 **Ajouts**

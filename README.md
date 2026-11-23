@@ -3,7 +3,7 @@
 > Simple comme respirer. Léger comme l'air.
 
 AirLang est un langage lisible, à typage progressif, qui se compile en C puis en binaire natif.
-Fichiers sources : `.air`. État actuel : **v0.5 (pré-stable, pas encore la 1.0)**.
+Fichiers sources : `.air`. État actuel : **v0.6 (pré-stable, pas encore la 1.0)**.
 
 ## Installation
 
@@ -57,7 +57,7 @@ main()
 
 AirLang ne convertit jamais implicitement : `"n=" + 1` est une erreur, utilisez `"n={x}"`.
 
-## Ce qui fonctionne en v0.5
+## Ce qui fonctionne en v0.6
 
 Variables, fonctions, `if` / `unless` / `while` / `for`, `break` / `continue`, `if … then … end` sur une ligne,
 chaînes interpolées, **listes et maps typées** (littéraux, indices, méthodes, parcours),
@@ -65,11 +65,11 @@ blueprints avec **héritage et redéfinition de méthodes**, erreurs claires (li
 **fonctions anonymes et fermetures** (`fun(x) => x * 2`, `map`/`filter`/`reduce`/`each`/`any`/`all`),
 **`Result[T]`** avec `Ok` / `Err` / `?`, **`match`** (instruction et expression) à motifs,
 **`try` / `catch` / `fail`**, **optionnels** `Float?` / `Int?` / `String?` avec promotion après `if x == null … return end`,
-modules standard `io` `math` `string` `list`, **imports de fichiers** (`import "./utils"`, `export`), `for ch in texte`, `"42".to_int()`, `"3.5".to_float()`, `texte.slice(a, b)`.
+modules standard `io` `math` `string` `list`, **imports de fichiers** (`import "./utils"`, `export` de fonctions, constantes, blueprints et traits), tests intégrés (`assert`, `assert_eq`, `air test`), `for ch in texte`, `"42".to_int()`, `"3.5".to_float()`, `texte.slice(a, b)`.
 
 ## Ce qui n'est pas encore là (voir [ROADMAP.md](ROADMAP.md))
 
-- v0.6 : blueprints/traits exportés par un module, comptage de références (libération de la mémoire), fonctions imbriquées.
+- v0.7 : comptage de références (libération de la mémoire, plan dans `docs/memory.md`), fonctions imbriquées, traits comme type de valeur.
   Un module utilisateur ne peut contenir que des fonctions, constantes et imports ;
   `@native("symbole_c")` n'est utilisable que comme unique corps d'une fonction.
 - Pas encore de libération de la mémoire (comptage de références prévu) : les programmes longs consomment de la mémoire.
