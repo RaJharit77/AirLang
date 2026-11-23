@@ -24,6 +24,7 @@ Usage :
     air run   <fichier.air>            Compile et exécute
     air build <fichier.air> [-o sortie]  Compile vers un exécutable
     air check <fichier.air>            Vérifie sans compiler
+    air test  <fichier|dossier>        Exécute les fonctions test_* (assert, assert_eq)
     air emit-c <fichier.air>           Affiche le C généré
     air tokens <fichier.air>           Affiche les tokens
     air ast   <fichier.air>            Affiche l'AST
@@ -32,7 +33,7 @@ Usage :
 (`airc fichier.air [--ast|--tokens|--check]` reste accepté.)
 """
 
-COMMANDS = {"run", "build", "check", "emit-c", "tokens", "ast", "version", "help"}
+COMMANDS = {"run", "build", "check", "test", "emit-c", "tokens", "ast", "version", "help"}
 
 
 def _color() -> bool:
@@ -56,6 +57,33 @@ def _read(path: str) -> str:
         print(f"avertissement : `{path}` n'a pas l'extension .air", file=sys.stderr)
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
+
+
+def _run_tests(path: str) -> int:
+    from .testrunner import find_test_files, run_file
+    files = find_test_files(path)
+    if not files:
+        print(f"aucun fichier de test trouvé dans `{path}` (noms attendus : test_*.air ou *_test.air)",
+              file=sys.stderr)
+        return 2
+    bad = total = 0
+    for f in files:
+        print(f"• {f}")
+        try:
+            code, n, output = run_file(f)
+        except CompileErrors as ce:
+            _report(ce.errors)
+            bad += 1
+            continue
+        except AirError as e:
+            _report([e])
+            bad += 1
+            continue
+        sys.stdout.write(output)
+        total += n
+        bad += 1 if code else 0
+    print(f"\n{len(files)} fichier(s), {total} test(s) — " + ("tout passe ✔" if not bad else f"{bad} fichier(s) en échec ✘"))
+    return 1 if bad else 0
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -87,6 +115,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(HELP, file=sys.stderr)
         return 2
     path, prog_args = rest[0], rest[1:]
+    if cmd == "test":
+        return _run_tests(path)
 
     try:
         source = _read(path)
