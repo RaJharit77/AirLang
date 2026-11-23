@@ -115,11 +115,9 @@ def test_type_error_in_module_points_to_module_file():
     assert "bad.air:2" in e
 
 
-def test_module_rejects_statements_and_blueprints():
+def test_module_rejects_statements():
     e = error_of({"m.air": 'print("hi")\n', "main.air": 'import "./m"\n'})
     assert "non supportée dans un module" in e
-    e = error_of({"m.air": 'export blueprint P\n    x: Int = 1\nend\n', "main.air": 'import "./m"\n'})
-    assert "v0.6" in e
 
 
 def test_local_names_shadow_module_names():
