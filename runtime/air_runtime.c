@@ -704,3 +704,26 @@ int air_str_cmp(AirStr a, AirStr b) {
     if (c) return c;
     return a.len < b.len ? -1 : (a.len > b.len ? 1 : 0);
 }
+
+
+/* ── assert / exit ─────────────────────────────────────────────────────────────── */
+
+void air_assert(bool cond, AirStr message, int64_t line) {
+    if (cond) return;
+    char buf[64];
+    snprintf(buf, sizeof buf, " (ligne %lld)", (long long)line);
+    air_fail(air_concat(message, air_str(buf)));
+}
+
+void air_assert_eq_fail(AirStr expected, AirStr got, int64_t line) {
+    char buf[64];
+    snprintf(buf, sizeof buf, " (ligne %lld)", (long long)line);
+    AirStr m = air_concat(air_concat(air_str("assert_eq : le premier vaut "), expected),
+                          air_concat(air_str(", le second vaut "), got));
+    air_fail(air_concat(m, air_str(buf)));
+}
+
+void air_exit(int64_t code) {
+    fflush(stdout);
+    exit((int)code);
+}

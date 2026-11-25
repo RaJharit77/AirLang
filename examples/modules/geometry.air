@@ -10,3 +10,12 @@ end
 export fun square_perimeter(side: Int) -> Int
     return side * SIDES_OF_SQUARE
 end
+
+# Les blueprints (et traits) s'exportent aussi : côté importateur, `geometry.Rectangle`.
+export blueprint Rectangle
+    width:  Int = 1
+    height: Int = 1
+    fun area() -> Int
+        return width * height
+    end
+end

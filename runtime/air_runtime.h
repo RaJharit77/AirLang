@@ -116,6 +116,9 @@ typedef struct AirTryFrame {
 extern AirTryFrame* air_try_top;
 extern AirStr air_last_error;
 void air_fail(AirStr message) __attribute__((noreturn));
+void air_assert(bool cond, AirStr message, int64_t line);          /* échoue (catchable) si cond est faux */
+void air_assert_eq_fail(AirStr expected, AirStr got, int64_t line) __attribute__((noreturn));
+void air_exit(int64_t code) __attribute__((noreturn));
 void air_runtime_error(const char* fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
 static inline void air_try_pop(int n) { while (n-- > 0 && air_try_top) air_try_top = air_try_top->prev; }
 

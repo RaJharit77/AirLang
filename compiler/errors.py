@@ -15,6 +15,8 @@ Format produit :
 
 from __future__ import annotations
 
+import re
+
 import difflib
 from typing import Iterator, List, Optional
 
@@ -24,6 +26,14 @@ YELLOW = "\033[93m"
 CYAN   = "\033[96m"
 BOLD   = "\033[1m"
 DIM    = "\033[2m"
+
+
+_MANGLED = re.compile(r"\b(?:\w+?_\d+|[A-Za-z0-9]+)__(?=[A-Za-z])")
+
+
+def demangle(text: str) -> str:
+    """Retire les préfixes de module (`geo_1__Point` -> `Point`) dans les messages affichés."""
+    return _MANGLED.sub("", text) if text else text
 
 
 class AirError(Exception):
@@ -60,8 +70,7 @@ class AirError(Exception):
         cyan = CYAN   if color else ""
         dim  = DIM    if color else ""
 
-        out = [f"{bold}{red}{self.label}{r}{bold} : {self.message}{r}"]
-
+        out = [f"{bold}{red}{self.label}{r}{bold} : {demangle(self.message)}{r}"]
         gutter = len(str(self.line)) if self.line > 0 else 1
         pad = " " * gutter
         if self.line > 0:
@@ -80,7 +89,7 @@ class AirError(Exception):
             if self.hint:
                 out.append(f"{dim}{pad} |{r}")
         if self.hint:
-            out.append(f"{dim}{pad} ={r} {yel}aide :{r} {self.hint}")
+            out.append(f"{dim}{pad} ={r} {yel}aide :{r} {demangle(self.hint)}")
 
         return "\n".join(out)
 

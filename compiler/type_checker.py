@@ -258,7 +258,7 @@ def map_methods(key: AirType, val: AirType) -> dict:
 class TypeChecker:
 
     # Fonctions intégrées (le contrôle d'arguments est spécifique, cf. _infer_builtin)
-    BUILTINS = {"print", "len", "str", "int", "float", "Ok", "Err", "fail"}
+    BUILTINS = {"print", "len", "str", "int", "float", "Ok", "Err", "fail", "assert", "assert_eq", "exit"}
 
     def __init__(self, source: str = "", filename: str = "<source>"):
         self.source   = source
@@ -621,7 +621,8 @@ class TypeChecker:
         for st in stmts:
             if isinstance(st, (Return, Break, Continue)):
                 return True
-            if isinstance(st, ExprStmt) and isinstance(st.expr, Call) and getattr(st.expr, "builtin", None) == "fail":
+            if isinstance(st, ExprStmt) and isinstance(st.expr, Call) \
+                    and getattr(st.expr, "builtin", None) in ("fail", "exit"):
                 return True
             if isinstance(st, IfStmt) and st.else_body:
                 branches = [st.then_body] + [b for _, b in st.elif_clauses] + [st.else_body]
@@ -855,6 +856,9 @@ class TypeChecker:
         for s in stmts:
             if isinstance(s, Return):
                 return True
+            if isinstance(s, ExprStmt) and isinstance(s.expr, Call) \
+                    and getattr(s.expr, "builtin", None) in ("fail", "exit"):
+                return True                              # `fail(...)` / `exit(...)` ne reviennent jamais
             if isinstance(s, IfStmt) and s.else_body:
                 branches = [s.then_body] + [b for _, b in s.elif_clauses] + [s.else_body]
                 if all(self._always_returns(b) for b in branches):
@@ -999,7 +1003,7 @@ class TypeChecker:
         d'une fonction anonyme : `numbers.map(fun(x) => x * 2)`."""
         if node is None:
             return T_ANY
-        if isinstance(node, (Lambda, Call, IfExpression, MatchExpr)):
+        if isinstance(node, (Lambda, Call, IfExpression, MatchExpr, ListLiteral)):
             node.expected = expected
         t = self._infer(node)
         node.ty = t
@@ -1021,7 +1025,9 @@ class TypeChecker:
             return T_STRING
 
         if isinstance(node, ListLiteral):
-            return AirType("List", [self._unify_elements(node.elements, "liste")])
+            exp = getattr(node, "expected", None)
+            want = exp.params[0] if exp is not None and exp.name == "List" and exp.params else None
+            return AirType("List", [self._unify_elements(node.elements, "liste", want)])
 
         if isinstance(node, MapLiteral):
             keys = [k for k, _ in node.pairs]
@@ -1242,9 +1248,23 @@ class TypeChecker:
                 s.lambda_node.uses_self = True
             s = s.parent
 
-    def _unify_elements(self, elems: List[Node], what: str) -> AirType:
+    def _common_ancestor(self, a: AirType, b: AirType) -> Optional[AirType]:
+        """Premier ancêtre (blueprint) de `a` auquel `b` est aussi assignable, sinon None."""
+        if isinstance(self.global_scope.resolve_blueprint(a.name), BlueprintInfo):
+            for anc in self._bp_chain(a.name):
+                cand = AirType(anc, [], a.optional)
+                if self.assignable(b, cand) and self.assignable(a, cand):
+                    return cand
+        return None
+
+    def _unify_elements(self, elems: List[Node], what: str, want: Optional[AirType] = None) -> AirType:
         if not elems:
-            return T_ANY
+            return want if want is not None and want.name != "Any" else T_ANY
+        if want is not None and want.name != "Any":      # le contexte impose le type des éléments
+            for e in elems:
+                t = self.infer(e, want)
+                self._expect(e, t, want, hint="les éléments de la liste doivent convenir au type annoncé")
+            return want
         result = self.infer(elems[0])
         for e in elems[1:]:
             t = self.infer(e)
@@ -1252,6 +1272,10 @@ class TypeChecker:
                 continue
             if self.assignable(result, t):
                 result = t
+                continue
+            common = self._common_ancestor(result, t)
+            if common is not None:                       # [carré, cercle] -> List[Forme]
+                result = common
             else:
                 self._type_err(e, f"élément de type `{t}` dans une {what} de `{result}`",
                                hint="tous les éléments doivent avoir le même type")
@@ -1491,6 +1515,31 @@ class TypeChecker:
                 self.err(err_wrong_arg_count(name, 1, len(node.args), **self._kw(node)))
             else:
                 self._expect(node.args[0], node.args[0].ty, T_STRING, hint="`fail(\"message\")` prend un message")
+            return T_VOID
+        if name == "exit":
+            if len(node.args) != 1:
+                self.err(err_wrong_arg_count(name, 1, len(node.args), **self._kw(node)))
+            else:
+                self._expect(node.args[0], node.args[0].ty, T_INT, hint="`exit(0)` prend un code de sortie entier")
+            return T_VOID
+        if name == "assert":
+            if len(node.args) not in (1, 2):
+                self.err(err_wrong_arg_count(name, 2, len(node.args), **self._kw(node)))
+            else:
+                self._expect(node.args[0], node.args[0].ty, T_BOOL, hint="`assert(condition, \"message\")`")
+                if len(node.args) == 2:
+                    self._expect(node.args[1], node.args[1].ty, T_STRING, hint="le message est une String")
+            return T_VOID
+        if name == "assert_eq":
+            if len(node.args) != 2:
+                self.err(err_wrong_arg_count(name, 2, len(node.args), **self._kw(node)))
+            else:
+                a, b = node.args
+                ok = (a.ty == b.ty and a.ty.name in ("Int", "Float", "Bool", "String")) or \
+                     ({a.ty.name, b.ty.name} == {"Int", "Float"})
+                if not ok:
+                    self._type_err(a, f"`assert_eq` compare deux valeurs de même type simple (Int, Float, Bool, String), pas `{a.ty}` et `{b.ty}`",
+                                   hint="comparez les champs un par un, ou utilisez `assert(a == b)`")
             return T_VOID
         if name in ("len", "str", "int", "float"):
             if len(node.args) != 1:

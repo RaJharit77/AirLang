@@ -246,18 +246,26 @@ class Parser:
 
     # ── Blueprint ──────────────────────────────────────────────────────────────
 
+    def _dotted_name(self) -> str:
+        """`Nom` ou `module.Nom` (type venant d'un module importé)."""
+        name = self.expect(TokenType.IDENT).value
+        if self.at(TokenType.DOT) and self.peek(1).type == TokenType.IDENT:
+            self.advance()
+            name += "." + self.advance().value
+        return name
+
     def parse_blueprint(self) -> BlueprintDecl:
         pos = self._pos()
         self.advance()  # blueprint
         name = self.expect(TokenType.IDENT).value
         extends = None
         if self.match(TokenType.EXTENDS):
-            extends = self.expect(TokenType.IDENT).value
+            extends = self._dotted_name()
         implements = []
         if self.match(TokenType.IMPLEMENTS):
-            implements.append(self.expect(TokenType.IDENT).value)
+            implements.append(self._dotted_name())
             while self.match(TokenType.COMMA):
-                implements.append(self.expect(TokenType.IDENT).value)
+                implements.append(self._dotted_name())
 
         fields, methods = [], []
         while not self.at(TokenType.END, TokenType.EOF):
@@ -496,7 +504,7 @@ class Parser:
 
     def parse_type_annotation(self) -> TypeAnnotation:
         pos  = self._pos()
-        name = self.expect(TokenType.IDENT).value
+        name = self._dotted_name()
         params = []
         if self.match(TokenType.LBRACKET):
             params.append(self.parse_type_annotation())
@@ -687,6 +695,11 @@ class Parser:
             self.advance()
             name = tok.value
 
+            # module.Blueprint.new(...)
+            if (self.at(TokenType.DOT) and self.peek(1).type == TokenType.IDENT
+                    and self.peek(2).type == TokenType.DOT and self.peek(3).type == TokenType.NEW):
+                self.advance()
+                name += "." + self.advance().value
             # Blueprint.new(...)
             if self.at(TokenType.DOT) and self.peek(1).type == TokenType.NEW:
                 self.advance()  # .
