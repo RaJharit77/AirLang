@@ -218,6 +218,17 @@ blueprint Report implements Printable, Saveable
 end
 ```
 
+**Un trait est aussi un type (v0.7)** : on peut l'utiliser pour un paramètre, une variable, un champ, une
+liste ou un retour. L'appel de méthode est dynamique : la méthode redéfinie par la classe réelle est appelée.
+
+```air
+fun show(n: Printable) -> String
+    return n.to_string()
+end
+items: List[Printable] = [Report.new(title: "A", content: "x")]
+```
+Pas encore : un trait optionnel (`Printable?`).
+
 ### 3.4 Instanciation et usage
 
 ```air
