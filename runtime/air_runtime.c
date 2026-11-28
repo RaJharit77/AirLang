@@ -7,24 +7,212 @@
 #include <stdarg.h>
 #include <ctype.h>
 #include <errno.h>
+#include <setjmp.h>
 #include <time.h>
 
-/* ── Mémoire ─────────────────────────────────────────────────────────────────── */
+/* ── Mémoire : ramasse-miettes conservatif (marquage + balayage) ─────────────────
+ *
+ * Toutes les allocations du programme passent par air_alloc / air_alloc_atomic / air_realloc.
+ * Chaque bloc a un petit en-tête (taille, index dans la table) et est inscrit dans une table.
+ * Quand assez d'octets ont été alloués depuis la dernière collecte, on :
+ *   1. trie la table par adresse ;
+ *   2. marque les blocs atteignables depuis les racines : pile C (registres compris) et
+ *      données globales (.data/.bss) — tout mot qui ressemble à une adresse DANS un bloc compte,
+ *      même une adresse intérieure ;
+ *   3. libère les blocs non marqués.
+ * Aucune modification du code généré n'est nécessaire (variables, listes, maps, fermetures,
+ * optionnels, try/catch, cycles). Un « faux positif » (un entier qui ressemble à une adresse)
+ * ne fait que retarder une libération, jamais en provoquer une trop tôt.
+ * Le GC n'est actif que si air_gc_init() a été appelé (le main généré le fait) ; hors Linux
+ * il reste désactivé et le programme se comporte comme avant (mémoire rendue à la fin).
+ * Variables d'environnement : AIR_GC_STATS=1 (bilan sur stderr), AIR_GC_STRESS=N (collecte tous
+ * les N allocations, pour les tests), AIR_GC=0 (désactive).
+ */
 
-void* air_alloc(size_t size) {
-    void* p = calloc(1, size);
-    if (!p) { air_panic("Mémoire insuffisante (air_alloc)"); }
-    return p;
+typedef struct { size_t size; size_t index; } AirBlockHdr;      /* 16 octets : charge utile alignée sur 16 */
+typedef struct { char* base; size_t size; uint8_t mark; uint8_t atomic; } AirBlock;
+
+#if defined(__linux__) && (defined(__GNUC__) || defined(__clang__))
+#  define AIR_GC_AVAILABLE 1
+extern char __data_start[] __attribute__((weak));
+extern char _end[] __attribute__((weak));
+#else
+#  define AIR_GC_AVAILABLE 0
+#endif
+
+static AirBlock* gc_blocks = NULL;
+static size_t    gc_count = 0, gc_cap = 0;
+static char*     gc_stack_base = NULL;
+static int       gc_enabled = 0, gc_stats_on = 0;
+static size_t    gc_since = 0, gc_threshold = 8u << 20, gc_live = 0;
+static size_t    gc_stress = 0, gc_stress_tick = 0;
+static size_t    gc_collections = 0, gc_total_alloc = 0, gc_total_freed = 0, gc_peak = 0, gc_n_alloc = 0;
+static int       gc_running = 0;
+
+#ifdef __SANITIZE_ADDRESS__
+/* ASan place par défaut les variables locales dans une « fausse pile » sur le tas, que le GC ne parcourt pas :
+ * on la désactive pour les exécutables compilés avec -fsanitize=address. */
+const char* __asan_default_options(void) { return "detect_stack_use_after_return=0"; }
+#endif
+
+static void gc_report(void) {
+    fprintf(stderr, "[air-gc] collectes=%zu allocations=%zu octets_alloués=%zu octets_libérés=%zu "
+                    "pic_vivant=%zu vivant_final=%zu\n",
+            gc_collections, gc_n_alloc, gc_total_alloc, gc_total_freed, gc_peak, gc_live);
 }
 
+void air_gc_init(void* stack_base) {
+#if AIR_GC_AVAILABLE
+    const char* off = getenv("AIR_GC");
+    if (off && off[0] == '0') return;
+    gc_stack_base = (char*)stack_base;
+    gc_enabled = (__data_start != NULL && _end != NULL);
+    const char* st = getenv("AIR_GC_STRESS");
+    if (st && atol(st) > 0) gc_stress = (size_t)atol(st);
+    const char* th = getenv("AIR_GC_THRESHOLD");
+    if (th && atol(th) > 0) gc_threshold = (size_t)atol(th);
+    const char* stats = getenv("AIR_GC_STATS");
+    if (stats && stats[0] == '1') { gc_stats_on = 1; atexit(gc_report); }
+#else
+    (void)stack_base;
+#endif
+}
+
+#if AIR_GC_AVAILABLE
+static int gc_cmp(const void* a, const void* b) {
+    const AirBlock* x = (const AirBlock*)a; const AirBlock* y = (const AirBlock*)b;
+    return (x->base > y->base) - (x->base < y->base);
+}
+
+/* Retourne l'index du bloc dont la charge utile contient `w` (une adresse juste après la fin compte aussi). */
+static long gc_find(uintptr_t w, uintptr_t lo, uintptr_t hi) {
+    if (w < lo || w >= hi) return -1;
+    size_t a = 0, b = gc_count;                     /* dernier bloc dont la charge utile commence avant (ou à) w */
+    while (a < b) {
+        size_t m = (a + b) / 2;
+        if ((uintptr_t)gc_blocks[m].base + sizeof(AirBlockHdr) <= w) a = m + 1; else b = m;
+    }
+    if (a == 0) return -1;
+    AirBlock* blk = &gc_blocks[a - 1];
+    uintptr_t start = (uintptr_t)blk->base + sizeof(AirBlockHdr);
+    return (w <= start + blk->size) ? (long)(a - 1) : -1;
+}
+
+typedef struct { size_t* items; size_t n, cap; } GcStack;
+static void gc_push(GcStack* st, size_t i) {
+    if (st->n == st->cap) {
+        st->cap = st->cap ? st->cap * 2 : 1024;
+        st->items = (size_t*)realloc(st->items, st->cap * sizeof(size_t));
+        if (!st->items) air_panic("Mémoire insuffisante (GC)");
+    }
+    st->items[st->n++] = i;
+}
+
+__attribute__((no_sanitize_address, no_sanitize("undefined")))
+static void gc_scan_range(const char* from, const char* to, GcStack* st, uintptr_t lo, uintptr_t hi) {
+    uintptr_t a = ((uintptr_t)from + 7) & ~(uintptr_t)7;
+    for (const uintptr_t* p = (const uintptr_t*)a; (const char*)(p + 1) <= to; p++) {
+        long i = gc_find(*p, lo, hi);
+        if (i >= 0 && !gc_blocks[i].mark) {
+            gc_blocks[i].mark = 1;
+            if (!gc_blocks[i].atomic) gc_push(st, (size_t)i);
+        }
+    }
+}
+
+__attribute__((noinline, no_sanitize_address, no_sanitize("undefined")))
+static void gc_collect_inner(void) {
+    jmp_buf regs;                                   /* force les registres sur la pile */
+    __builtin_unwind_init();
+    setjmp(regs);
+    char marker = 0;
+    const char* sp = (const char*)((uintptr_t)(&marker < (char*)&regs ? &marker : (char*)&regs));
+
+    qsort(gc_blocks, gc_count, sizeof(AirBlock), gc_cmp);
+    for (size_t i = 0; i < gc_count; i++) {
+        gc_blocks[i].mark = 0;
+        ((AirBlockHdr*)gc_blocks[i].base)->index = i;
+    }
+    uintptr_t lo = (uintptr_t)gc_blocks[0].base + sizeof(AirBlockHdr);
+    uintptr_t hi = (uintptr_t)gc_blocks[gc_count - 1].base + sizeof(AirBlockHdr) + gc_blocks[gc_count - 1].size + 1;
+
+    GcStack st = {NULL, 0, 0};
+    gc_scan_range(sp, gc_stack_base + 256, &st, lo, hi);       /* pile (+ marge pour le cadre de main) */
+    gc_scan_range(__data_start, _end, &st, lo, hi);            /* globales */
+    while (st.n) {
+        AirBlock* b = &gc_blocks[st.items[--st.n]];
+        gc_scan_range(b->base + sizeof(AirBlockHdr), b->base + sizeof(AirBlockHdr) + b->size, &st, lo, hi);
+    }
+    free(st.items);
+
+    size_t keep = 0, freed = 0, live = 0;
+    for (size_t i = 0; i < gc_count; i++) {
+        if (gc_blocks[i].mark) {
+            gc_blocks[keep] = gc_blocks[i];
+            ((AirBlockHdr*)gc_blocks[keep].base)->index = keep;
+            live += gc_blocks[keep].size;
+            keep++;
+        } else {
+            freed += gc_blocks[i].size;
+            free(gc_blocks[i].base);
+        }
+    }
+    gc_count = keep;
+    gc_total_freed += freed;
+    gc_live = live;
+}
+#endif
+
+void air_gc_collect(void) {
+#if AIR_GC_AVAILABLE
+    if (!gc_enabled || gc_running || gc_count == 0) return;
+    gc_running = 1;
+    gc_collect_inner();
+    gc_collections++;
+    gc_since = 0;
+    gc_threshold = gc_live > (8u << 20) ? gc_live : (8u << 20);
+    gc_running = 0;
+#endif
+}
+
+static void* gc_alloc(size_t size, int atomic) {
+    if (gc_enabled && !gc_running) {
+        if (gc_stress) { if (++gc_stress_tick >= gc_stress) { gc_stress_tick = 0; air_gc_collect(); } }
+        else if (gc_since >= gc_threshold) air_gc_collect();
+    }
+    char* base = (char*)calloc(1, sizeof(AirBlockHdr) + size + 1);
+    if (!base) { air_gc_collect(); base = (char*)calloc(1, sizeof(AirBlockHdr) + size + 1); }
+    if (!base) { air_panic("Mémoire insuffisante (air_alloc)"); }
+    ((AirBlockHdr*)base)->size = size;
+    if (gc_enabled) {
+        if (gc_count == gc_cap) {
+            gc_cap = gc_cap ? gc_cap * 2 : 4096;
+            gc_blocks = (AirBlock*)realloc(gc_blocks, gc_cap * sizeof(AirBlock));
+            if (!gc_blocks) air_panic("Mémoire insuffisante (table du GC)");
+        }
+        ((AirBlockHdr*)base)->index = gc_count;
+        gc_blocks[gc_count++] = (AirBlock){base, size, 0, (uint8_t)atomic};
+        gc_since += size; gc_total_alloc += size; gc_n_alloc++;
+        gc_live += size;
+        if (gc_live > gc_peak) gc_peak = gc_live;
+    }
+    return base + sizeof(AirBlockHdr);
+}
+
+void* air_alloc(size_t size)        { return gc_alloc(size, 0); }
+void* air_alloc_atomic(size_t size) { return gc_alloc(size, 1); }   /* données sans pointeurs (texte) */
+
 void* air_realloc(void* ptr, size_t size) {
-    void* p = realloc(ptr, size);
-    if (!p) { air_panic("Mémoire insuffisante (air_realloc)"); }
-    return p;
+    void* p = gc_alloc(size, 0);
+    if (ptr) {
+        size_t old = ((AirBlockHdr*)((char*)ptr - sizeof(AirBlockHdr)))->size;
+        memcpy(p, ptr, old < size ? old : size);
+    }
+    return p;                       /* l'ancien bloc devient un déchet : le GC le récupère */
 }
 
 void air_free(void* ptr) {
-    if (ptr) free(ptr);
+    (void)ptr;                      /* libération explicite inutile : le GC s'en charge */
 }
 
 /* ── Strings ─────────────────────────────────────────────────────────────────── */
@@ -32,13 +220,13 @@ void air_free(void* ptr) {
 AirStr air_str(const char* s) {
     if (!s) return (AirStr){NULL, 0};
     size_t n = strlen(s);
-    char*  d = (char*)air_alloc(n + 1);
+    char*  d = (char*)air_alloc_atomic(n + 1);
     memcpy(d, s, n + 1);
     return (AirStr){d, n};
 }
 
 AirStr air_str_n(const char* s, size_t n) {
-    char* d = (char*)air_alloc(n + 1);
+    char* d = (char*)air_alloc_atomic(n + 1);
     memcpy(d, s, n);
     d[n] = '\0';
     return (AirStr){d, n};
@@ -60,7 +248,7 @@ bool air_str_eq(AirStr a, AirStr b) {
 
 AirStr air_str_concat(AirStr a, AirStr b) {
     size_t n = a.len + b.len;
-    char*  d = (char*)air_alloc(n + 1);
+    char*  d = (char*)air_alloc_atomic(n + 1);
     memcpy(d, a.data, a.len);
     memcpy(d + a.len, b.data, b.len);
     d[n] = '\0';
@@ -146,7 +334,7 @@ AirStr air_str_replace(AirStr s, AirStr from, AirStr to) {
         p += from.len;
     }
     size_t new_len = s.len + count * (to.len - from.len);
-    char* buf = (char*)air_alloc(new_len + 1);
+    char* buf = (char*)air_alloc_atomic(new_len + 1);
     char* src = s.data;
     char* dst = buf;
     while ((p = memmem(src, s.len - (src - s.data), from.data, from.len))) {
@@ -168,7 +356,7 @@ AirStr air_last_error = {(char*)"", 0};
 
 void air_fail(AirStr message) {
     if (air_try_top) {                         /* un `try` est actif : on saute vers son `catch` */
-        char* copy = (char*)air_alloc(message.len + 1);      /* le message doit survivre à la pile abandonnée */
+        char* copy = (char*)air_alloc_atomic(message.len + 1);      /* le message doit survivre à la pile abandonnée */
         if (message.len) memcpy(copy, message.data, message.len);
         copy[message.len] = '\0';
         air_last_error = (AirStr){copy, message.len};
@@ -578,7 +766,7 @@ AirResult air_file_read(AirStr path) {
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     rewind(f);
-    char* buf = (char*)air_alloc(size + 1);
+    char* buf = (char*)air_alloc_atomic(size + 1);
     fread(buf, 1, size, f);
     buf[size] = '\0';
     fclose(f);

@@ -254,6 +254,9 @@ bool air_eq(AirVal a, AirVal b);
 /* ── Mémoire ─────────────────────────────────────────────────────────────────── */
 
 void* air_alloc(size_t size);
+void* air_alloc_atomic(size_t size);   /* bloc sans pointeurs (texte) : non parcouru par le GC */
+void  air_gc_init(void* stack_base);   /* active le ramasse-miettes ; appelé au début de main */
+void  air_gc_collect(void);
 void* air_realloc(void* ptr, size_t size);
 void  air_free(void* ptr);
 
