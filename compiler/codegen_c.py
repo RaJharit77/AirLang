@@ -100,6 +100,8 @@ class CCodegen:
             return simple[t.name]
         if t.name in self._blueprints:
             return f"bp_{t.name}*"
+        if t.name in self._traits:
+            return f"tr_{t.name}"
         if t.name == "List" and t.params:
             self.ctype(t.params[0], node, what)      # valide le type des éléments
             return "AirList*"
@@ -179,6 +181,7 @@ class CCodegen:
     def generate(self, program: Program) -> str:
         self.output, self.indent, self._tmp = [], 0, 0
         self._blueprints = {}
+        self._traits: Dict[str, TraitDecl] = {}
 
         funs, bps, toplevel = [], [], []
         for st in program.statements:
@@ -188,7 +191,9 @@ class CCodegen:
             elif isinstance(d, BlueprintDecl):
                 bps.append(d)
                 self._blueprints[d.name] = d
-            elif isinstance(d, (TraitDecl, ImportDecl)):
+            elif isinstance(d, TraitDecl):
+                self._traits[d.name] = d
+            elif isinstance(d, ImportDecl):
                 continue
             else:
                 toplevel.append(d)
@@ -201,6 +206,8 @@ class CCodegen:
             self.emit(f"typedef struct bp_{bp.name} bp_{bp.name};")
         self._res_marker = len(self.output)        # les typedef des Result s'insèrent ici (à la fin)
         self._res_types, self._opt_types = {}, {}
+        for tr in self._traits.values():
+            self._trait_struct(tr)
         for bp in bps:
             self._check_overrides(bp)
             self._vt_struct(bp)
@@ -217,6 +224,9 @@ class CCodegen:
         self.emit()
         for bp in bps:
             self._vt_instance(bp)
+        self.emit()
+        for bp in bps:
+            self._trait_adapters(bp)
         self.emit()
 
         # globales
@@ -239,6 +249,7 @@ class CCodegen:
 
         self.emit("int main(void) {")
         self.indent += 1
+        self.emit("air_gc_init(__builtin_frame_address(0));")
         self._try_depth, self._loop_try, self._volatile = 0, [], self._try_assigned(toplevel)
         for st in toplevel:
             self.stmt(st, top=True)
@@ -321,6 +332,53 @@ class CCodegen:
         self.indent -= 1
         self.emit(f"}} bp_{bp.name}_vt;")
         self.emit()
+
+    # ── Traits comme types de valeur : (objet, table de méthodes) ──────────────
+
+    def _trait_sig(self, tr: TraitDecl, m: FunDecl, name: str) -> str:
+        params = ["void* self"] + [f"{self.ctype(p.ty, m, f'le paramètre `{p.name}`')} p_{p.name}" for p in m.params]
+        ret = self.ctype(m.ret_ty, m)
+        return f"{ret} {name}({', '.join(params)})"
+
+    def _trait_struct(self, tr: TraitDecl):
+        self.emit(f"typedef struct tr_{tr.name} tr_{tr.name};")
+        self.emit(f"typedef struct tr_{tr.name}_vt {{")
+        for m in tr.methods:
+            ret = self.ctype(m.ret_ty, m)
+            ps = ", ".join(["void*"] + [self.ctype(p.ty, m) for p in m.params])
+            self.emit(f"    {ret} (*m_{m.name})({ps});")
+        if not tr.methods:
+            self.emit("    int unused;")
+        self.emit(f"}} tr_{tr.name}_vt;")
+        self.emit(f"struct tr_{tr.name} {{ void* self; const tr_{tr.name}_vt* vt; }};")
+        self.emit()
+
+    def _implemented_traits(self, bp_name: str) -> List[str]:
+        out: List[str] = []
+        for c in self.chain(bp_name):
+            for t in self._blueprints[c].implements:
+                if t in self._traits and t not in out:
+                    out.append(t)
+        return out
+
+    def _trait_adapters(self, bp: BlueprintDecl):
+        """Pour chaque trait implémenté : fonctions d'adaptation (dispatch dynamique) + table `trv_<Trait>_<Bp>`."""
+        virt = self.virtuals(bp.name)
+        for tname in self._implemented_traits(bp.name):
+            tr = self._traits[tname]
+            for m in tr.methods:
+                ic, _ = virt[m.name]
+                args = ", ".join(["o"] + [f"p_{p.name}" for p in m.params])
+                self.emit("static " + self._trait_sig(tr, m, f"trw_{tname}_{bp.name}_{m.name}") + " {")
+                self.emit(f"    bp_{ic}* o = (bp_{ic}*)self;")
+                self.emit(f"    {'return ' if m.ret_ty.name != 'Void' else ''}o->vt->m_{m.name}({args});")
+                self.emit("}")
+            self.emit(f"static const tr_{tname}_vt trv_{tname}_{bp.name} = {{")
+            for m in tr.methods:
+                self.emit(f"    .m_{m.name} = trw_{tname}_{bp.name}_{m.name},")
+            if not tr.methods:
+                self.emit("    0")
+            self.emit("};")
 
     def _vt_instance(self, bp: BlueprintDecl):
         virt = self.virtuals(bp.name)
@@ -773,6 +831,8 @@ class CCodegen:
             if (src.name != dst.name and src.name in self._blueprints
                     and dst.name in self._blueprints):
                 return f"((bp_{dst.name}*)({code}))"      # enfant → parent
+            if dst.name in self._traits and not dst.optional and src.name in self._blueprints:
+                return f"((tr_{dst.name}){{ (void*)({code}), &trv_{dst.name}_{src.name} }})"   # blueprint → trait
         return code
 
     def to_str(self, node: Node) -> str:
@@ -1181,6 +1241,9 @@ class CCodegen:
             return self._wrap(pre, self._map_method(node, obj, args))
         if owner == "Result":
             return self._wrap(pre, self._result_method(node, obj, args))
+        if owner and owner in self._traits:
+            o = self.fresh("_air_o")
+            return self._wrap(pre, f"({{ tr_{owner} {o} = {obj}; {o}.vt->m_{node.method}({', '.join([o + '.self'] + args)}); }})")
         if owner and owner in self._blueprints:
             st = node.obj.ty.name
             ic = self.virtuals(st)[node.method][0]      # classe qui introduit la méthode

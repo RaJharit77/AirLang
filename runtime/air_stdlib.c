@@ -104,7 +104,7 @@ int64_t air_string_index_of(AirStr s, AirStr sub) {
 AirStr air_string_repeat(AirStr s, int64_t n) {
     if (n <= 0 || s.len == 0) return air_str("");
     size_t total = s.len * (size_t)n;
-    char* buf = (char*)air_alloc(total + 1);
+    char* buf = (char*)air_alloc_atomic(total + 1);
     for (int64_t i = 0; i < n; i++) memcpy(buf + i * s.len, s.data, s.len);
     buf[total] = '\0';
     AirStr result = air_str_n(buf, total);
@@ -113,7 +113,7 @@ AirStr air_string_repeat(AirStr s, int64_t n) {
 }
 
 AirStr air_string_reverse(AirStr s) {
-    char* buf = (char*)air_alloc(s.len + 1);
+    char* buf = (char*)air_alloc_atomic(s.len + 1);
     for (size_t i = 0; i < s.len; i++) buf[i] = s.data[s.len - 1 - i];
     buf[s.len] = '\0';
     AirStr result = air_str_n(buf, s.len);
@@ -270,7 +270,7 @@ AirStr air_os_cwd(void) {
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 AirStr air_json_stringify_string(AirStr s) {
-    char* buf = (char*)air_alloc(s.len * 2 + 4);
+    char* buf = (char*)air_alloc_atomic(s.len * 2 + 4);
     char* out = buf;
     *out++ = '"';
     for (size_t i = 0; i < s.len; i++) {

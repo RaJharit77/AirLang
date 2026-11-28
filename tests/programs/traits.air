@@ -1,0 +1,29 @@
+trait Named
+    fun label() -> String
+    fun shout(times: Int) -> String
+end
+blueprint Dog implements Named
+    fun label() -> String
+        return "Dog"
+    end
+    fun shout(times: Int) -> String
+        return "Wouf{times}"
+    end
+end
+blueprint Puppy extends Dog
+    fun label() -> String
+        return "Puppy"
+    end
+end
+fun show(n: Named) -> String
+    return n.label()
+end
+fun main()
+    items: List[Named] = [Dog.new(), Puppy.new()]
+    for it in items
+        print(show(it), it.shout(2))
+    end
+    x: Named = Puppy.new()
+    print(x.label())
+end
+main()

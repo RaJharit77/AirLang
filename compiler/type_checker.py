@@ -534,6 +534,7 @@ class TypeChecker:
         info = self.global_scope.resolve_blueprint(node.name)
         for m in node.methods:
             info.methods[m.name] = self._make_info(m, node.name)
+            m.ret_ty = info.methods[m.name].return_type or T_VOID
 
     def _returns_value(self, stmts) -> bool:
         """Vrai si le corps contient un `return <expr>` (hors fonctions imbriquées)."""
@@ -1686,6 +1687,7 @@ class TypeChecker:
                 self._type_err(node, f"le trait `{obj_t.name}` n'a pas de méthode `{node.method}`")
                 return T_ANY
             node.owner = obj_t.name
+            node.resolved = self._bind_args(node.method, minfo, node, node.args, node.kwargs)
             return minfo.return_type or T_VOID
         return T_ANY
 

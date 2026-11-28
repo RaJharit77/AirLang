@@ -1,5 +1,28 @@
 # Journal des changements
 
+## 0.7.0
+
+**Ajouts**
+- **Mémoire récupérée automatiquement** : ramasse-miettes conservatif (marquage + balayage) dans le runtime.
+  Libère aussi les cycles, ne change pas le code généré. Réglages : `AIR_GC=0`, `AIR_GC_STATS=1`,
+  `AIR_GC_STRESS=N`, `AIR_GC_THRESHOLD`. Détails et limites : `docs/memory.md`.
+- **Traits comme types de valeur** : `fun show(n: Named)`, `x: Named = Puppy.new()`, `List[Named]`, retours de
+  type trait, trait exporté d'un module (`shapes.Named`). Dispatch dynamique (les redéfinitions des sous-classes
+  sont respectées).
+- `tests/programs/traits.air` ; `AIR_GC_STRESS=1 make sanitize`.
+
+**Changement de plan (assumé)**
+- Le comptage de références annoncé pour la v0.7 est remplacé par un ramasse-miettes : même résultat pour
+  l'utilisateur (la mémoire est rendue), sans réécrire le générateur de code, et les cycles sont libérés.
+
+**Changements incompatibles**
+- Aucun changement de syntaxe. `air_free` est un no-op dans le runtime (le GC s'en charge).
+
+**Limites connues**
+- GC actif seulement sous Linux avec gcc/clang ; ailleurs le comportement est celui de la v0.6.
+- Collecte non incrémentale (pause proportionnelle au tas vivant).
+- Traits optionnels (`Named?`) : erreur claire ; pas de fonctions imbriquées ; pas de REPL ; modules à points absents.
+
 ## 0.6.0
 
 **Ajouts**
